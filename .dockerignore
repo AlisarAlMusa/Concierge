@@ -1,0 +1,15 @@
+.env
+*.env.local
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/node_modules
+**/*.log
+docs/
+evals/
+scripts/
+*.md

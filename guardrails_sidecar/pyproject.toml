@@ -1,0 +1,10 @@
+[project]
+name = "concierge-guardrails-sidecar"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.7",
+    # Person C adds nemo-guardrails or guardrails-ai here
+]

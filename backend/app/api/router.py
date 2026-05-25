@@ -1,0 +1,27 @@
+from fastapi import APIRouter
+
+from app.api.routes import (
+    admin_config,
+    auth,
+    chat,
+    cms,
+    costs,
+    escalations,
+    health,
+    leads,
+    tenants,
+    widgets,
+)
+
+api_router = APIRouter()
+
+api_router.include_router(health.router)
+api_router.include_router(auth.router, prefix="/auth")
+api_router.include_router(tenants.router, prefix="/platform/tenants")
+api_router.include_router(admin_config.router, prefix="/tenant")
+api_router.include_router(cms.router, prefix="/cms")
+api_router.include_router(widgets.router, prefix="/widgets")
+api_router.include_router(chat.router, prefix="/chat")
+api_router.include_router(leads.router, prefix="/leads")
+api_router.include_router(escalations.router, prefix="/escalations")
+api_router.include_router(costs.router, prefix="/costs")

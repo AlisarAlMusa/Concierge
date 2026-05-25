@@ -1,0 +1,17 @@
+# Evaluation thresholds — committed Day 1 with placeholder values.
+# Tighten each threshold as real numbers land from Person C's eval scripts.
+# Any regression below these values blocks CI merge.
+
+classifier:
+  macro_f1_min: 0.50       # tighten to 0.75 after training
+
+rag:
+  hit_at_5_min: 0.50       # tighten to 0.70 after golden set is labelled
+  faithfulness_min: 0.50   # tighten to 0.80 after eval runs
+
+agent:
+  tool_selection_accuracy_min: 0.50  # tighten to 0.80 after golden set
+
+security:
+  red_team_pass_rate: 1.0   # never lower this
+  redaction_pass_rate: 1.0  # never lower this

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+
+# Env
+.env
+*.env.local
+
+# ML artifacts (committed only if small — use model card SHA check)
+*.onnx
+*.joblib
+*.pkl
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Docker
+.DS_Store
+
+# Alembic
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Test/coverage
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Logs
+*.log
