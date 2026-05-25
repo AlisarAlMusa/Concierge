@@ -26,15 +26,15 @@ jobs:
 
       - name: Lint (ruff)
         working-directory: backend
-        run: uv run ruff check .
+        run: ruff check .
 
       - name: Format check (black)
         working-directory: backend
-        run: uv run black --check .
+        run: black --check .
 
       - name: Unit tests
         working-directory: backend
-        run: uv run pytest tests/ -x --tb=short || true
+        run: pytest tests/ -x --tb=short || true
         # 'true' until real tests exist — remove once tests are committed
 
   # TODO: Person C wires these gates after eval scripts are implemented
