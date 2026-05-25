@@ -56,9 +56,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(TenantSuspendedError)
-    async def tenant_suspended_handler(
-        request: Request, exc: TenantSuspendedError
-    ) -> JSONResponse:
+    async def tenant_suspended_handler(request: Request, exc: TenantSuspendedError) -> JSONResponse:
         return JSONResponse(
             status_code=403,
             content={"detail": str(exc), "code": "tenant_suspended"},
@@ -72,9 +70,7 @@ def register_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(ExternalServiceError)
-    async def external_service_handler(
-        request: Request, exc: ExternalServiceError
-    ) -> JSONResponse:
+    async def external_service_handler(request: Request, exc: ExternalServiceError) -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"detail": str(exc), "code": "upstream_error"},

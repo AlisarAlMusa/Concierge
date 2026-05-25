@@ -7,10 +7,10 @@ class Base(DeclarativeBase):
 
 # Import all models here so Alembic autogenerate picks them up.
 # Person A's models:
-from app.models.tenant import Tenant  # noqa: F401, E402
-from app.models.user import User  # noqa: F401, E402
 from app.models.audit_log import AuditLog  # noqa: F401, E402
 from app.models.cost_event import CostEvent  # noqa: F401, E402
+from app.models.tenant import Tenant  # noqa: F401, E402
+from app.models.user import User  # noqa: F401, E402
 
 # Person B's models (imported after B adds their implementation):
 # from app.models.cms import CmsPage  # noqa: F401, E402

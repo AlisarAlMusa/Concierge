@@ -32,8 +32,12 @@ def upgrade() -> None:
         sa.Column(
             "status",
             postgresql.ENUM(
-                "active", "suspended", "deleting", "deleted",
-                name="tenant_status", create_type=False,
+                "active",
+                "suspended",
+                "deleting",
+                "deleted",
+                name="tenant_status",
+                create_type=False,
             ),
             nullable=False,
             server_default="active",
@@ -66,8 +70,11 @@ def upgrade() -> None:
         sa.Column(
             "role",
             postgresql.ENUM(
-                "tenant_manager", "tenant_admin", "member",
-                name="user_role", create_type=False,
+                "tenant_manager",
+                "tenant_admin",
+                "member",
+                name="user_role",
+                create_type=False,
             ),
             nullable=False,
             server_default="member",
@@ -115,9 +122,7 @@ def upgrade() -> None:
     op.create_index("ix_audit_logs_created_at", "audit_logs", ["created_at"])
 
     # --- cost_events ---
-    op.execute(
-        "CREATE TYPE cost_operation AS ENUM ('llm', 'embedding', 'rerank', 'classifier')"
-    )
+    op.execute("CREATE TYPE cost_operation AS ENUM ('llm', 'embedding', 'rerank', 'classifier')")
     op.create_table(
         "cost_events",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -132,8 +137,12 @@ def upgrade() -> None:
         sa.Column(
             "operation",
             postgresql.ENUM(
-                "llm", "embedding", "rerank", "classifier",
-                name="cost_operation", create_type=False,
+                "llm",
+                "embedding",
+                "rerank",
+                "classifier",
+                name="cost_operation",
+                create_type=False,
             ),
             nullable=False,
         ),
