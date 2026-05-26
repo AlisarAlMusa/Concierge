@@ -1,10 +1,15 @@
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, HTTPException
+import redis.asyncio as aioredis
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
 from app.models.user import User, UserRole
+
+
+async def get_redis(request: Request) -> aioredis.Redis:
+    return request.app.state.redis
 
 
 async def get_session(

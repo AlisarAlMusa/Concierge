@@ -9,7 +9,12 @@
 **/.ruff_cache
 **/node_modules
 **/*.log
+**/*.egg-info
+**/.venv
+**/dist
+**/build
 docs/
 evals/
 scripts/
+specs/
 *.md
