@@ -1,13 +1,17 @@
 from fastapi import APIRouter
 from sqlalchemy import text
 
+from app.core.logging import get_logger
 from app.db.session import get_session_factory
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
 async def health() -> dict:
+    logger.info("health_check")
     return {"status": "ok"}
 
 

@@ -1,7 +1,24 @@
 import logging
 import sys
+import uuid
 
 import structlog
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Bind request_id and trace_id to every log line emitted during a request."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        structlog.contextvars.bind_contextvars(request_id=request_id, trace_id=trace_id)
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.clear_contextvars()
+        return response
 
 
 def configure_logging(env: str = "local") -> None:

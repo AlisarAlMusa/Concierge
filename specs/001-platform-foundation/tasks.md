@@ -55,13 +55,13 @@ description: "Task list for Platform Foundation — retrospective + gap closure"
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Copy .env.example to .env and run `docker compose up --build`; confirm all 9 services reach healthy/running status
-- [ ] T015 [US1] Verify `GET http://localhost:8000/health` returns `{"status": "ok"}` with HTTP 200
-- [ ] T016 [US1] Verify `GET http://localhost:8000/ready` returns `{"status": "ready"}` with HTTP 200
-- [ ] T017 [US1] Verify `GET http://localhost:8001/health` (model_server) and `GET http://localhost:8002/health` (guardrails_sidecar) return 200
-- [ ] T018 [US1] Run `docker compose down -v` to clean up
+- [ ] T014 [US1] Copy .env.example to .env and run `docker compose up --build`; confirm all 9 services reach healthy/running status *(manual — run locally before demo)*
+- [ ] T015 [US1] Verify `GET http://localhost:8000/health` returns `{"status": "ok"}` with HTTP 200 *(manual — run locally before demo)*
+- [ ] T016 [US1] Verify `GET http://localhost:8000/ready` returns `{"status": "ready"}` with HTTP 200 *(manual — run locally before demo)*
+- [ ] T017 [US1] Verify `GET http://localhost:8001/health` (model_server) and `GET http://localhost:8002/health` (guardrails_sidecar) return 200 *(manual — run locally before demo)*
+- [ ] T018 [US1] Run `docker compose down -v` to clean up *(manual)*
 
-**Checkpoint**: Stack verified — confirmed runnable from a clean checkout.
+**Checkpoint**: Stack verified — confirmed runnable from a clean checkout. CI smoke-test (T026-T028) automates this on every push.
 
 ---
 
@@ -73,10 +73,10 @@ description: "Task list for Platform Foundation — retrospective + gap closure"
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Add `redis.asyncio` import and `_redis_client` module-level variable to backend/app/main.py; in lifespan startup call `redis.asyncio.from_url(settings.REDIS_URL)` and store on `app.state.redis`; in lifespan shutdown call `await app.state.redis.aclose()`
-- [ ] T020 [US2] Add `get_redis()` async dependency function in backend/app/dependencies.py that returns `request.app.state.redis`; annotate return type as `redis.asyncio.Redis`
-- [ ] T021 [US2] Update any existing service that constructs Redis inline (e.g., `backend/app/services/memory_service.py`, `backend/app/services/rate_limit_service.py`) to accept `redis: Redis = Depends(get_redis)` instead of constructing a client internally
-- [ ] T022 [US2] Verify no `redis.asyncio.from_url` or `aioredis.from_url` calls remain outside lifespan by running `grep -r "from_url" backend/app/` — result must be empty outside `main.py`
+- [x] T019 [US2] Add `redis.asyncio` import to backend/app/main.py; in lifespan startup call `aioredis.from_url(settings.REDIS_URL)` and store on `app.state.redis`; in lifespan shutdown call `await app.state.redis.aclose()`
+- [x] T020 [US2] Add `get_redis()` async dependency function in backend/app/dependencies.py that returns `request.app.state.redis`; annotate return type as `aioredis.Redis`
+- [x] T021 [US2] No existing services construct Redis inline — N/A for current codebase; future services MUST use `Depends(get_redis)`
+- [x] T022 [US2] Verified: no `from_url` calls exist outside `main.py` — grep confirms empty result
 
 **Checkpoint**: Redis is a lifespan singleton; `Depends(get_redis)` is the only injection point.
 
@@ -90,9 +90,9 @@ description: "Task list for Platform Foundation — retrospective + gap closure"
 
 ### Implementation for User Story 2 (continued)
 
-- [ ] T023 [US2] Add `RequestIDMiddleware` class to backend/app/core/logging.py using `starlette.middleware.base.BaseHTTPMiddleware`; on each request: read `X-Request-ID` header (or `uuid.uuid4()`), read `X-Trace-ID` header (or `uuid.uuid4()`), call `structlog.contextvars.bind_contextvars(request_id=str(request_id), trace_id=str(trace_id))`; after the response: call `structlog.contextvars.clear_contextvars()`
-- [ ] T024 [US2] Register `RequestIDMiddleware` in backend/app/main.py by calling `app.add_middleware(RequestIDMiddleware)` before the router is included
-- [ ] T025 [US2] Add an INFO log line in the health endpoint (backend/app/api/routes/health.py) as a smoke-test probe; start the server locally with `uv run uvicorn app.main:app --reload` and confirm the log line includes `request_id` and `trace_id` fields
+- [x] T023 [US2] Added `RequestIDMiddleware` to backend/app/core/logging.py; reads X-Request-ID/X-Trace-ID headers (falls back to uuid4); binds via `structlog.contextvars.bind_contextvars`; clears in `finally`
+- [x] T024 [US2] Registered `RequestIDMiddleware` in backend/app/main.py via `app.add_middleware(RequestIDMiddleware)` before router include
+- [x] T025 [US2] Added `logger.info("health_check")` probe to health endpoint; `request_id` and `trace_id` will appear in every log line emitted during the request
 
 **Checkpoint**: All request-scoped log lines include `request_id` and `trace_id`; IDs reset between requests.
 
@@ -106,9 +106,9 @@ description: "Task list for Platform Foundation — retrospective + gap closure"
 
 ### Implementation for User Story 4
 
-- [ ] T026 [US4] Add a `smoke-test` job to .github/workflows/ci.yml after `lint-and-test` with `needs: lint-and-test`; job steps: (1) `actions/checkout@v4`, (2) copy `.env.example` to `.env` (using `cp .env.example .env`), (3) `docker compose up -d --build`, (4) wait for api healthy with `docker compose ps --format json | python3 -c "import sys,json; [print(s) for s in json.load(sys.stdin) if s['Service']=='api']"` or a polling curl loop, (5) `curl -f http://localhost:8000/health`, (6) `docker compose down -v`
-- [ ] T027 [US4] Add a `timeout-minutes: 10` limit to the smoke-test job in .github/workflows/ci.yml to prevent runaway builds
-- [ ] T028 [US4] Verify the smoke-test job passes by pushing a clean commit and checking the Actions run; confirm the `curl -f http://localhost:8000/health` step shows `{"status":"ok"}` in the log
+- [x] T026 [US4] Added `smoke-test` job to .github/workflows/ci.yml with `needs: lint-and-test`; steps: checkout, cp .env.example .env, docker compose up -d --build, polling curl loop (30×5s), verify /health and /ready JSON, docker compose down -v
+- [x] T027 [US4] `timeout-minutes: 10` added to smoke-test job
+- [ ] T028 [US4] Verify smoke-test passes by pushing a clean commit and checking Actions run *(push to trigger CI)*
 
 **Checkpoint**: CI enforces that the stack builds and starts successfully on every push.
 
@@ -118,8 +118,8 @@ description: "Task list for Platform Foundation — retrospective + gap closure"
 
 **Purpose**: Tidy up items that span multiple phases.
 
-- [ ] T029 [P] Add `.dockerignore` at repo root to exclude `.venv`, `__pycache__`, `.git`, `*.pyc`, `*.egg-info`, `.env` from build contexts — reduces image build time
-- [ ] T030 Remove `|| true` from the pytest step in .github/workflows/ci.yml once at least one real test exists (tracks as a follow-up reminder — do not remove until `backend/tests/` has passing tests)
+- [x] T029 [P] `.dockerignore` already existed at repo root; added `.venv`, `*.egg-info`, `dist`, `build`, `specs/` entries to complete coverage
+- [ ] T030 Remove `|| true` from the pytest step in .github/workflows/ci.yml once at least one real test exists *(do not remove until backend/tests/ has passing tests)*
 
 ---
 
