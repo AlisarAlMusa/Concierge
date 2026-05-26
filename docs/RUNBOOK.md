@@ -2,7 +2,6 @@
 | --- | --- | --- |
 | API | http://localhost:8000 | JWT auth — register via `POST /auth/register`, login via `POST /auth/login` |
 | API Docs (Swagger) | http://localhost:8000/docs | Only available when `APP_ENV=local` |
-| API Health | http://localhost:8000/health | No auth |
 | Model Server | http://localhost:8001 | Header: `X-Service-Token: change-me-local-dev-only` |
 | Model Server Health | http://localhost:8001/health | No auth |
 | Guardrails Sidecar | http://localhost:8002 | Header: `X-Service-Token: change-me-local-dev-only` |

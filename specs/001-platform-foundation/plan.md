@@ -8,7 +8,9 @@
 
 ## Summary
 
-The Platform Foundation establishes the runnable skeleton for the entire Concierge SaaS platform: a Docker Compose stack with nine services, a FastAPI application with async lifespan management, pydantic-settings configuration, structlog structured logging, SQLAlchemy 2.x async database sessions, health/readiness endpoints, centralised domain error handling, and an Alembic migration baseline. Three gaps remain open: Redis is not a lifespan singleton, per-request `request_id`/`trace_id` middleware is missing, and CI has no smoke-test job.
+The Platform Foundation establishes the runnable skeleton for the entire Concierge SaaS platform: a Docker Compose stack with nine services, a FastAPI application with async lifespan management, pydantic-settings configuration, structlog structured logging, SQLAlchemy 2.x async database sessions, health/readiness endpoints, centralised domain error handling, and an Alembic migration baseline.
+
+All original gaps have been closed in follow-up commits: Redis is now a lifespan singleton, `RequestIDMiddleware` binds `request_id`/`trace_id` per request, CI has a smoke-test job, and Vault is now fully wired — secrets are seeded automatically from `.env` at stack startup and the app reads all secrets from Vault at runtime with `.env` values as local-dev fallbacks. `docker-compose.yml` contains zero hardcoded credentials. Alembic migrations run automatically on container start via `entrypoint.sh`.
 
 ---
 
@@ -42,7 +44,7 @@ The Platform Foundation establishes the runnable skeleton for the entire Concier
 |-----------|--------|-------|
 | I. Tenant Isolation | ✅ Partial | `db/rls.py` implements `set_tenant_context` / `reset_tenant_context` with guaranteed reset in `finally`. Full RLS policies deferred to tenancy feature. |
 | II. Clean Layered Architecture | ✅ Pass | Routes → Services → Repositories → Models → Schemas → Core layers all scaffolded. `extra="forbid"` on config; no `os.getenv` in app code. `Depends()` used for DB session. |
-| III. Security by Default | ✅ Partial | `WIDGET_TOKEN_SECRET` and `SERVICE_AUTH_SECRET` loaded via config. Vault dynamic resolution is a known gap (static token only). |
+| III. Security by Default | ✅ Pass | All secrets (`jwt_secret`, `service_auth_secret`, `widget_token_secret`, `minio_secret_key`, `openai_api_key`, `anthropic_api_key`, `azure_openai_api_key`) are seeded into Vault via `scripts/vault-init.sh` at stack startup and read back into `app.state.secrets` at app startup. `docker-compose.yml` contains zero hardcoded credentials — all referenced via `${VAR}` from `.env`. |
 | IV. Async All the Way Down | ✅ Pass | `create_async_engine`, `AsyncSession`, `async_sessionmaker`, async lifespan, no `time.sleep` or blocking I/O found. |
 | V. Lean Containers — No Torch | ✅ Pass | `pyproject.toml` has no torch/transformers. Model server is a separate image. |
 | VI. Evals Are the Grade | ⚠ Gap | Eval CI gates are commented out pending Person C's scripts. Scaffold is committed; gates are not yet enforced. |
@@ -71,17 +73,18 @@ specs/001-platform-foundation/
 ```text
 backend/
 ├── app/
-│   ├── main.py                    # FastAPI app, lifespan, error handlers, router
-│   ├── dependencies.py            # Shared FastAPI Depends() helpers
+│   ├── main.py                    # FastAPI app, lifespan (Vault fetch, Redis, DB engine), middleware, router
+│   ├── dependencies.py            # Shared Depends() helpers: get_redis, get_secrets, get_session, role guards
 │   ├── api/
 │   │   ├── router.py              # Central APIRouter aggregation
 │   │   └── routes/
 │   │       ├── health.py          # GET /health, GET /ready
 │   │       └── [stub routes]      # auth, tenants, widgets, cms, chat, leads…
 │   ├── core/
-│   │   ├── config.py              # pydantic-settings singleton (get_settings)
+│   │   ├── config.py              # pydantic-settings singleton; all env vars declared here
 │   │   ├── errors.py              # Domain exceptions + FastAPI handlers
-│   │   ├── logging.py             # structlog configure_logging + get_logger
+│   │   ├── logging.py             # structlog configure_logging, get_logger, RequestIDMiddleware
+│   │   ├── vault.py               # fetch_vault_secrets() — reads secret/concierge via httpx
 │   │   ├── redaction.py           # PII redaction (Person C integration point)
 │   │   └── security.py            # Auth helpers
 │   ├── db/
@@ -96,14 +99,18 @@ backend/
 │   ├── repositories/              # Tenant-scoped data access layer
 │   ├── services/                  # Business logic layer
 │   └── schemas/                   # Pydantic v2 request/response DTOs
+├── entrypoint.sh                  # Runs `alembic upgrade head` then starts uvicorn
 ├── tests/
 └── pyproject.toml                 # uv-managed deps; ruff + black config
 
-docker-compose.yml                 # 9-service stack with healthchecks
-.env.example                       # All required env vars documented
+scripts/
+└── vault-init.sh                  # Seeds all secrets from .env into Vault at stack startup
+
+docker-compose.yml                 # 9-service stack + vault-init one-shot; zero hardcoded secrets
+.env.example                       # All required env vars documented; secrets are placeholders only
 .github/
 └── workflows/
-    └── ci.yml                     # ruff + black + pytest; eval gates scaffolded (commented)
+    └── ci.yml                     # ruff + black + pytest + smoke-test; eval gates scaffolded (commented)
 ```
 
 ---
@@ -114,16 +121,20 @@ No constitution violations requiring justification. All deviations from the idea
 
 ---
 
-## Open Gaps (Follow-up Required)
+## Closed Gaps
 
-The following items are committed as known gaps. They do not block current team feature branches but must be closed before the platform is production-ready.
+| Gap | Spec Ref | Closed by |
+|-----|----------|-----------|
+| Redis client not a lifespan singleton | FR-006 | `main.py` lifespan calls `aioredis.from_url`; `get_redis` dependency exposes it |
+| No `request_id`/`trace_id` middleware | FR-012, SC-004 | `RequestIDMiddleware` in `core/logging.py`; registered in `main.py` |
+| CI has no smoke-test job | FR-022 | `smoke-test` job added to `ci.yml`; polls `/health` after `docker compose up -d` |
+| No `.dockerignore` files | — | Per-service `.dockerignore` files created; root `.dockerignore` extended |
+| Vault dynamic secrets — static token only | FR-009 | `scripts/vault-init.sh` seeds all secrets from `.env` into Vault on every `docker compose up`; `core/vault.py` fetches them at app startup; `app.state.secrets` is the single runtime source for all secrets; `docker-compose.yml` has zero hardcoded credentials |
+| Alembic migrations required manual step | FR-019 | `entrypoint.sh` runs `alembic upgrade head` before uvicorn starts |
+
+## Open Gaps (Follow-up Required)
 
 | Gap | Spec Ref | Owner | Notes |
 |-----|----------|-------|-------|
-| Redis client is per-service-call, not a lifespan singleton | FR-006 | Person A | Add `redis.asyncio.from_url(settings.REDIS_URL)` to lifespan; expose via `Depends(get_redis)` |
-| No `request_id`/`trace_id` middleware | FR-012, SC-004 | Person A | Add `RequestIDMiddleware` that calls `structlog.contextvars.bind_contextvars(request_id=..., trace_id=...)` at request start and `clear_contextvars()` at end |
-| CI has no smoke-test job | FR-022 | Person A | Add a job that runs `docker compose up -d`, waits for healthy, hits `GET /health`, tears down |
 | MinIO client not initialised | FR-006 | Person B | Create `core/storage.py` singleton when CMS feature lands |
-| Vault dynamic secrets | FR-009 | Person A | Deferred; static token acceptable for local/dev envs |
 | Eval CI gates commented out | FR-023 | Person C | Uncomment after `scripts/run_evals.sh` is implemented |
-| No `.dockerignore` at repo root | — | Any | Minor: only affects build context size, not correctness |

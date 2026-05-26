@@ -12,6 +12,11 @@ async def get_redis(request: Request) -> aioredis.Redis:
     return request.app.state.redis
 
 
+async def get_secrets(request: Request) -> dict[str, str]:
+    """Return the secrets dict populated from Vault at startup."""
+    return request.app.state.secrets
+
+
 async def get_session(
     session: AsyncSession = Depends(get_db_session),
 ) -> AsyncGenerator[AsyncSession, None]:
