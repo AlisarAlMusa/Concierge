@@ -6,6 +6,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
+from app.core.tracing import setup_tracing
 from app.db.session import close_engine, get_engine
 
 
@@ -13,6 +14,7 @@ from app.db.session import close_engine, get_engine
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.APP_ENV)
+    setup_tracing(app)
     # Warm up the DB connection pool on startup.
     get_engine()
     yield

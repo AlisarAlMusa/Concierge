@@ -7,6 +7,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      phoenix:
+        condition: service_started
     ports:
       - "8000:8000"
     healthcheck:
@@ -92,6 +94,13 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+
+  phoenix:
+    image: arizeai/phoenix:latest
+    ports:
+      - "6006:6006"   # UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
 
   vault:
     image: hashicorp/vault:latest
