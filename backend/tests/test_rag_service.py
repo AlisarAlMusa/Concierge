@@ -18,6 +18,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from app.services.tools.rag_search import RagSearchResult
 
 from app.core.errors import ExternalServiceError
 from app.models.chunk import CmsChunk
@@ -26,7 +27,6 @@ from app.services.rag_service import (
     RagService,
     _distance_to_score,
 )
-from app.services.tools.rag_search import RagSearchResult
 
 
 # ----- Fake session ----------------------------------------------------------
