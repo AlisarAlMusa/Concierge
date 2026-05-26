@@ -154,3 +154,9 @@ Shared contracts are defined in `docs/SPEC.md`. Rebase from main daily.
 ## Implementation Order
 
 Docker Compose → health endpoint → DB connection → Alembic → tenant model → RLS proof → auth → CMS → embeddings → model_server → router → agent tools → guardrails → widget token → public chat → leads/escalations → cost tracking → erasure → evals → CI gates → docs/demo.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at `specs/001-platform-foundation/plan.md`.
+<!-- SPECKIT END -->
