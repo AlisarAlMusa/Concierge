@@ -9,6 +9,8 @@ services:
         condition: service_healthy
       phoenix:
         condition: service_started
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     healthcheck:
@@ -20,6 +22,9 @@ services:
   model_server:
     build: ./model_server
     env_file: .env
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "8001:8001"
     healthcheck:
@@ -31,6 +36,9 @@ services:
   guardrails_sidecar:
     build: ./guardrails_sidecar
     env_file: .env
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "8002:8002"
     healthcheck:
@@ -112,6 +120,24 @@ services:
     ports:
       - "8200:8200"
     command: server -dev
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:latest
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+    entrypoint: ["/bin/sh", "/seed_vault.sh"]
+    volumes:
+      - ./scripts/seed_vault.sh:/seed_vault.sh:ro
+    restart: "no"
 
 volumes:
   postgres_data:

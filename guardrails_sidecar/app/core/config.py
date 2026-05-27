@@ -1,3 +1,12 @@
+"""Settings singleton for `guardrails_sidecar`.
+
+Mirrors `backend/app/core/config.py` for the fields this sidecar needs.
+Service-auth secret resolution follows the spec 018 contract: fetch from Vault
+when `APP_ENV != "local"`, fall back to `.env` (with a warning) in local mode.
+"""
+
+from __future__ import annotations
+
 import logging
 from functools import lru_cache
 
@@ -9,38 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     APP_ENV: str = "local"
 
-    # Database
-    DATABASE_URL: str
-
-    # Redis
-    REDIS_URL: str
-
     # Vault
-    VAULT_ADDR: str
-    VAULT_TOKEN: str
+    VAULT_ADDR: str = "http://vault:8200"
+    VAULT_TOKEN: str = "dev-root-token"
     VAULT_SERVICE_AUTH_PATH: str = "concierge/service-auth"
 
-    # MinIO
-    MINIO_ENDPOINT: str
-    MINIO_ACCESS_KEY: str
-    MINIO_SECRET_KEY: str
-
-    # LLM (hosted API — no local models)
-    LLM_PROVIDER: str
-    LLM_MODEL: str
-    EMBEDDING_MODEL: str
-
-    # Internal service URLs
-    MODEL_SERVER_URL: str
-    GUARDRAILS_URL: str
-
-    # Secrets — sourced from Vault when APP_ENV != "local" (spec 018).
+    # Secret — populated from Vault when APP_ENV != "local".
     SERVICE_AUTH_SECRET: str = ""
-    WIDGET_TOKEN_SECRET: str
 
 
 @lru_cache

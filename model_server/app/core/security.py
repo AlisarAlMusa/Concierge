@@ -1,3 +1,11 @@
+"""Service-to-service authentication for `model_server`.
+
+Mirrors `backend/app/core/security.py`. The shared service token is read from
+the settings singleton (populated from Vault in non-local envs — see spec 018).
+"""
+
+from __future__ import annotations
+
 import hmac
 
 from fastapi import Header, HTTPException
@@ -6,11 +14,8 @@ from app.core.config import get_settings
 
 
 def verify_service_token(token: str | None) -> bool:
-    """Constant-time comparison of service-to-service credential.
-
-    Returns False for any falsy input (missing/empty header) so the dependency
-    always emits the same 403 — no oracle distinguishing absent vs. wrong
-    (spec 018 FR-007).
+    """Constant-time comparison; falsy inputs return False so the dependency
+    emits the same 403 for missing / empty / wrong tokens (FR-007).
     """
     if not token:
         return False
@@ -23,11 +28,9 @@ def verify_service_token(token: str | None) -> bool:
 async def require_service_token(
     x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
 ) -> None:
-    """FastAPI dependency for internal service routes.
-
-    Header is declared optional so a missing header produces 403 (not 422 from
-    Pydantic validation). Per spec 018 FR-007, missing/empty/wrong tokens MUST
-    all return the identical response body.
+    """FastAPI dependency. Use as `dependencies=[Depends(require_service_token)]`
+    on every business endpoint. Do NOT apply to `/health` — Docker healthchecks
+    must remain reachable.
     """
     if not verify_service_token(x_service_token):
         raise HTTPException(status_code=403, detail="Invalid service token")

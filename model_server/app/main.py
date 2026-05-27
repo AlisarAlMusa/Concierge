@@ -1,7 +1,13 @@
-# model_server — Person C implements model_loader.py and predict_service.py
-# This shell provides health check so docker-compose builds cleanly.
-from fastapi import FastAPI
+"""model_server entry point.
 
+Person C implements `model_loader.py` and `predict_service.py`. This shell
+provides health + a stubbed predict endpoint. Service-to-service auth is
+enforced via the shared `require_service_token` dependency (spec 018).
+"""
+
+from fastapi import Depends, FastAPI
+
+from app.core.security import require_service_token
 from app.schemas import PredictRequest, PredictResponse
 
 app = FastAPI(title="Model Server", version="0.1.0")
@@ -12,7 +18,11 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/predict-intent", response_model=PredictResponse)
+@app.post(
+    "/predict-intent",
+    response_model=PredictResponse,
+    dependencies=[Depends(require_service_token)],
+)
 async def predict_intent(request: PredictRequest) -> PredictResponse:
     # TODO: Person C — call predict_service.predict(request.message)
     return PredictResponse(

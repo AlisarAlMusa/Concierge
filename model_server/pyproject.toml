@@ -8,5 +8,7 @@ dependencies = [
     "pydantic>=2.7",
     "scikit-learn>=1.4",
     "numpy>=1.26",
+    "pydantic-settings>=2.2",
+    "hvac>=2.3",
     # onnxruntime added by Person C when DL model is ready
 ]
