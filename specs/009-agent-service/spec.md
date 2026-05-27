@@ -6,7 +6,7 @@
 
 **Created**: 2026-05-27
 
-**Status**: Draft
+**Status**: Implemented (agent loop + tool registry + memory + Groq LLM client; production wiring complete)
 
 ---
 
@@ -129,8 +129,269 @@ The system prompt and reply prompt live in `prompts/` as versioned markdown file
 
 ## Assumptions
 
-- The agent is a single tool-calling LLM loop — not a multi-agent graph. The router is the orchestrator; the agent handles what the router cannot.
+- The agent is a single tool-calling LLM loop — not a multi-agent graph. `ChatOrchestrator` dispatches; the agent handles what the router cannot.
 - `capture_lead` is an unauthenticated, LLM-triggered write — the rate limit and schema validation in the tool implementation are the primary spam controls.
-- Session memory stores the last N messages (configurable, default 10 turns); older messages are truncated to stay within the token budget.
-- Guardrail input/output checks are synchronous HTTP calls to the guardrails sidecar; if the sidecar is unavailable, the agent applies a fail-open policy with a warning log (Week 8 scope).
+- Session memory stores the last `MEMORY_MAX_ENTRIES` entries (default `40`); older messages are LTRIMmed inside `MemoryService.append`.
+- Guardrail input/output checks happen in `ChatOrchestrator` (before and after the agent), not in `AgentService`. The agent never calls the sidecar directly.
 - The 15-example tool-selection golden set is hand-labelled by Person B during Day 3; the eval script is wired to CI in feature 016.
+- The hosted LLM is Groq (`GroqLLMClient`); a provider swap means replacing `app/services/llm_client.py` only — `AgentService` does not change.
+
+---
+
+## Implementation Addendum (Owner B — frozen contracts)
+
+> Merged from the retired `specs/{agent-service,tool-registry,memory-service,llm-client}/spec.md` files (May 2026). This section is the source of truth for the implemented surfaces.
+
+### A. AgentService (`backend/app/services/agent_service.py`)
+
+```python
+class LLMToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: dict[str, Any] | str       # JSON string or already-parsed dict
+
+class LLMResponse(BaseModel):
+    content: str | None = None
+    tool_calls: list[LLMToolCall] = []
+
+class AgentTurnResult(BaseModel):
+    reply: str
+    sources: list[UUID] = []
+    agent_iterations: int
+    used_refusal_fallback: bool = False
+
+class AgentService:
+    def __init__(
+        self, *,
+        llm_client,            # duck-typed; production is GroqLLMClient
+        memory_service: MemoryService,
+        tool_registry: ToolRegistry,
+        max_iterations: int,   # bound: hard cap, not advisory
+        max_output_tokens: int,
+    ) -> None: ...
+
+    async def run(
+        self, *,
+        tenant_id: UUID, conversation_id: UUID, user_message: str,
+        tenant_persona: str | None = None,
+        visitor_session_id: UUID | None = None,
+        route_decision: Any = None,    # for logging only; read via getattr
+    ) -> AgentTurnResult: ...
+```
+
+`LLMResponse` and `LLMToolCall` are the **only** LLM-boundary types. Any provider adapter must produce them. The canonical home is `agent_service.py`; `llm_client.py` imports them from there.
+
+#### Loop invariants (frozen)
+
+1. One LLM, one loop, no recursion. The `for` loop in `run` is the only loop.
+2. `max_iterations` and `max_output_tokens` are hard bounds.
+3. Sequential tool dispatch within an iteration. No `asyncio.gather`.
+4. Empty LLM content **and** empty `tool_calls` → load `prompts/refusal.md`, return with `used_refusal_fallback=True`.
+5. Same `ToolError.code` twice in a row across iterations → load refusal, return.
+6. Iteration cap reached without a final answer → load refusal, return.
+7. `sources` is deduped, order-preserving (first occurrence wins).
+8. Memory roles map to LLM roles: `visitor → user`, `assistant → assistant`. Other roles (`tool`) are skipped when building context.
+9. `tenant_persona` defaults to `"a helpful, polite assistant for this business"` when not supplied.
+10. The agent never writes memory — that's the orchestrator's job.
+
+### B. ToolRegistry (`backend/app/services/tools/`)
+
+```python
+class ToolError(BaseModel):
+    error: str
+    code: str   # rate_limited | validation_error | not_found | unknown_tool
+
+@dataclass
+class ToolContext:
+    tenant_id: UUID
+    conversation_id: UUID
+    visitor_session_id: UUID | None = None
+
+@dataclass
+class ToolHandler:
+    name: str
+    description: str
+    args_schema: type[BaseModel]
+    invoke_fn: Callable[..., Awaitable[BaseModel]]
+    def to_openai_spec(self) -> dict[str, Any]: ...
+
+class ToolRegistry:
+    def __init__(self, handlers: list[ToolHandler]) -> None: ...
+    def tool_specs(self) -> list[dict[str, Any]]: ...
+    async def dispatch(
+        self, name: str, raw_args: dict[str, Any] | str, ctx: ToolContext,
+    ) -> BaseModel | ToolError: ...
+
+def build_registry(
+    *, rag_service, lead_service, escalation_service,
+) -> ToolRegistry: ...
+```
+
+#### Per-tool args/result (matches `docs/SPEC.md §3`)
+
+```python
+# rag_search (SPEC §3.1)
+class RagSearchArgs(BaseModel):
+    query: str
+    max_chunks: int = 5         # ge=1, le=10
+
+class RagChunk(BaseModel):
+    text: str
+    source_page_id: UUID
+    score: float
+
+class RagSearchResult(BaseModel):
+    chunks: list[RagChunk]
+    total_found: int
+
+# capture_lead (SPEC §3.2)
+class CaptureLeadArgs(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    intent: str
+    context: str | None = None
+
+class CaptureLeadResult(BaseModel):
+    lead_id: UUID
+    status: Literal["created"]
+
+# escalate (SPEC §3.3)
+class EscalateArgs(BaseModel):
+    reason: str
+    context: str | None = None
+
+class EscalateResult(BaseModel):
+    escalation_id: UUID
+    status: Literal["created"]
+```
+
+#### Registry invariants
+
+1. `tenant_id`, `conversation_id`, `visitor_session_id` are read **only** from `ToolContext`. They are never accepted as LLM arguments.
+2. JSON-string arguments are decoded with `json.loads`; invalid JSON → `ToolError(code="validation_error")`.
+3. Pydantic `ValidationError` → `ToolError(code="validation_error")`.
+4. `RateLimitError` → `ToolError(code="rate_limited")`.
+5. `NotFoundError` → `ToolError(code="not_found")`.
+6. Unknown tool name → `ToolError(code="unknown_tool")`.
+7. `ExternalServiceError` and any other exception propagate by design.
+8. Dispatch is strictly sequential.
+
+### C. MemoryService (`backend/app/services/memory_service.py`)
+
+```python
+Role = Literal["visitor", "assistant", "tool"]
+
+class MemoryEntry(BaseModel):
+    role: Role
+    content_redacted: str
+    ts: int                       # unix seconds at write time
+
+class MemoryService:
+    def __init__(self, redis, *, ttl_seconds: int, max_entries: int) -> None: ...
+    async def append(self, tenant_id: UUID, conversation_id: UUID,
+                     role: Role, content: str) -> None: ...
+    async def load(self, tenant_id: UUID, conversation_id: UUID,
+                   ) -> list[MemoryEntry]: ...
+    async def purge_conversation(self, tenant_id: UUID, conversation_id: UUID,
+                                 ) -> None: ...
+    async def purge_tenant(self, tenant_id: UUID) -> int: ...
+```
+
+Redis key: `memory:{tenant_id}:{conversation_id}` (`docs/SPEC.md §10`).
+
+#### Memory invariants
+
+1. Every value written passes through `app.core.redaction.redact` first — no raw content stored.
+2. `LTRIM(key, -max_entries, -1)` on every `append`. List never exceeds `max_entries`.
+3. `EXPIRE(key, ttl_seconds)` on every `append` (sliding TTL).
+4. Identifiers (`tenant_id`, `conversation_id`) appear only in the key, never in the value.
+5. `purge_tenant` uses `SCAN` + `UNLINK` (batched at 500). `KEYS` and `DEL` are forbidden.
+6. Tool arguments and tool results are never appended to memory.
+7. Fail-open on Redis errors: log + swallow (`append`/`purge_*`) or return `[]` (`load`). Turn proceeds without history.
+
+### D. GroqLLMClient (`backend/app/services/llm_client.py`)
+
+The single, provider-isolated implementation of `tool_complete`. The only file that imports the `groq` SDK.
+
+```python
+class GroqLLMClient:
+    def __init__(
+        self, *,
+        client: AsyncGroq, model: str,
+        max_attempts: int = 3,
+        backoff_base_seconds: float = 0.5,
+        backoff_max_seconds: float = 5.0,
+        temperature: float = 0.2,
+    ) -> None: ...
+
+    @classmethod
+    def from_api_key(cls, *, api_key: str, model: str,
+                     timeout_seconds: float = 30.0, **kwargs) -> "GroqLLMClient": ...
+
+    async def tool_complete(
+        self, *,
+        messages: list[dict[str, Any]],   # OpenAI-shape
+        tools: list[dict[str, Any]],      # OpenAI-shape function specs
+        max_tokens: int,
+    ) -> LLMResponse: ...
+```
+
+#### LLM client invariants
+
+1. SDK retries are **disabled** (`AsyncGroq(max_retries=0)`). The retry loop in this module is the single source of truth.
+2. One request per call. No streaming.
+3. `tool_choice="auto"` is set only when tools are supplied; otherwise `tools` and `tool_choice` are both omitted.
+4. Retry budget bounded by `max_attempts` (default `3`). Backoff: `min(backoff_base * 2**attempt, backoff_max)`.
+5. Retryable: `APIConnectionError` (incl. timeouts), `APIStatusError` with status `429` or `5xx`.
+6. Non-retryable: any other `4xx`, generic `APIError`, any unexpected `Exception` → `ExternalServiceError(service="groq", …)` immediately.
+7. Exhaustion → `ExternalServiceError("max retries (N) exhausted: …")`.
+8. Tool-call `arguments` forwarded as the raw JSON string Groq returns.
+9. `message.content` may be `None` when only tool calls were emitted; the agent's refusal logic handles that.
+
+### E. Settings (frozen)
+
+| Setting | Default | Source |
+|---|---|---|
+| `AGENT_MAX_TOOL_ITERATIONS` | `3` | `Settings` |
+| `AGENT_MAX_OUTPUT_TOKENS` | `800` | `Settings` |
+| `MEMORY_TTL_SECONDS` | `86400` (24h, per SPEC §10) | `Settings` |
+| `MEMORY_MAX_ENTRIES` | `40` | `Settings` |
+| `REDIS_URL` | `redis://redis:6379/0` (compose default) | `Settings` |
+| `GROQ_API_KEY` | (env, secret, required) | `Settings` |
+| `LLM_MODEL` | `llama-3.3-70b-versatile` | `Settings` |
+| `LLM_TIMEOUT_SECONDS` | `30.0` | `Settings` |
+
+Prompts (loaded via `app.core.prompts.load_prompt`, cached with `lru_cache`):
+
+- `backend/app/prompts/system_agent.md` — agent persona
+- `backend/app/prompts/refusal.md` — refusal fallback
+
+### F. Test coverage (frozen counts)
+
+| Surface | File | Scenarios |
+|---|---|---|
+| `AgentService` | `backend/tests/test_agent_service.py` | 7 |
+| `ToolRegistry` | `backend/tests/test_tool_registry.py` | 5 |
+| `MemoryService` (planned `fakeredis`) | n/a — implicit via `FakeMemoryService` in `conftest.py` | — |
+| `GroqLLMClient` | `backend/tests/test_llm_client.py` | 14 |
+
+### G. Implementation status
+
+| Component | Status |
+|---|---|
+| `AgentService` bounded loop, sources, refusal/anti-loop | Implemented |
+| `LLMResponse` / `LLMToolCall` / `AgentTurnResult` | Implemented |
+| `ToolRegistry` + `build_registry` + per-tool handlers | Implemented |
+| `MemoryService` (append/load/purge_*) with fail-open | Implemented |
+| `GroqLLMClient` with bounded retry + error translation | Implemented |
+| Wired into `ChatOrchestrator` via DI | Implemented |
+| Real `system_agent.md` / `refusal.md` content | Implemented (`app/prompts/`) |
+| `groq>=0.11`, `redis>=5`, prompt files | Pinned in `backend/pyproject.toml` |
+| Tool-selection golden set + CI gate | Pending — see feature 016 |
+
+### H. Future integration points
+
+- **Provider swap**: replace `llm_client.py` with `<provider>_llm_client.py` exposing the same `tool_complete` signature. `AgentService` does not change.
+- **Tenant persona source**: `ChatOrchestrator` will load `guardrail_configs.tenant_persona` (Person C) and pass it via `tenant_persona=...`. Today it defaults to the platform persona.
+- **Long-term memory / summarization**: explicitly out of scope. Any such change requires a new spec, not a patch to this module.
