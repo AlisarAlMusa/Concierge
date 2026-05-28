@@ -42,8 +42,29 @@ class TenantUpdate(BaseModel):
     status: TenantStatus | None = None
 
 
+class OperationUsage(BaseModel):
+    """Aggregate usage figures for a single operation type."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: Decimal = Decimal("0")
+
+
 class TenantUsageSummary(BaseModel):
+    """Aggregate cost metrics for a tenant (Spec 013 FR-005, FR-006).
+
+    Top-level totals plus a per-operation breakdown. Contains only numeric
+    aggregates — no conversation content, lead records, or CMS body text
+    (SC-005).
+    """
+
     tenant_id: UUID
     total_input_tokens: int
     total_output_tokens: int
     total_cost_usd: Decimal
+
+    # Per-operation breakdown (defaults to zero so the field is always present).
+    llm: OperationUsage = OperationUsage()
+    embedding: OperationUsage = OperationUsage()
+    classifier: OperationUsage = OperationUsage()
+    rerank: OperationUsage = OperationUsage()

@@ -166,11 +166,17 @@ async def delete_tenant(
 
 
 async def get_usage_summary(session: AsyncSession, tenant_id: UUID) -> TenantUsageSummary:
+    from app.schemas.tenant import OperationUsage
+
     await get_tenant_or_404(session, tenant_id)
-    summary = await tenant_repository.get_usage_summary(session, tenant_id)
+    s = await tenant_repository.get_usage_summary(session, tenant_id)
     return TenantUsageSummary(
         tenant_id=tenant_id,
-        total_input_tokens=summary["total_input_tokens"],
-        total_output_tokens=summary["total_output_tokens"],
-        total_cost_usd=summary["total_cost_usd"],
+        total_input_tokens=s["total_input_tokens"],
+        total_output_tokens=s["total_output_tokens"],
+        total_cost_usd=s["total_cost_usd"],
+        llm=OperationUsage(**s["llm"]),
+        embedding=OperationUsage(**s["embedding"]),
+        classifier=OperationUsage(**s["classifier"]),
+        rerank=OperationUsage(**s["rerank"]),
     )
