@@ -80,11 +80,7 @@ def _load_sidecar_app(name: str, sidecar_root: Path) -> FastAPI:
     prevent backend code (e.g. Vault tests that patch `app.core.config`) from
     being shadowed by a sidecar's module of the same name.
     """
-    saved = {
-        k: sys.modules[k]
-        for k in list(sys.modules)
-        if k == "app" or k.startswith("app.")
-    }
+    saved = {k: sys.modules[k] for k in list(sys.modules) if k == "app" or k.startswith("app.")}
     for k in saved:
         del sys.modules[k]
 

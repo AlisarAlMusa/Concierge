@@ -28,16 +28,16 @@ async def lifespan(app: FastAPI):
     # Secrets dictionary — values sourced from settings, which reads from Vault
     # in non-local environments via fetch_service_token in config.py.
     app.state.secrets = {
-        "jwt_secret":               settings.JWT_SECRET,
-        "service_auth_secret":      settings.SERVICE_AUTH_SECRET,
-        "widget_token_secret":      settings.WIDGET_TOKEN_SECRET,
-        "minio_secret_key":         settings.MINIO_SECRET_KEY,
-        "openai_api_key":           settings.OPENAI_API_KEY,
-        "anthropic_api_key":        settings.ANTHROPIC_API_KEY,
-        "azure_openai_api_key":     settings.AZURE_OPENAI_API_KEY,
-        "azure_openai_endpoint":    settings.AZURE_OPENAI_ENDPOINT,
+        "jwt_secret": settings.JWT_SECRET,
+        "service_auth_secret": settings.SERVICE_AUTH_SECRET,
+        "widget_token_secret": settings.WIDGET_TOKEN_SECRET,
+        "minio_secret_key": settings.MINIO_SECRET_KEY,
+        "openai_api_key": settings.OPENAI_API_KEY,
+        "anthropic_api_key": settings.ANTHROPIC_API_KEY,
+        "azure_openai_api_key": settings.AZURE_OPENAI_API_KEY,
+        "azure_openai_endpoint": settings.AZURE_OPENAI_ENDPOINT,
         "azure_openai_api_version": settings.AZURE_OPENAI_API_VERSION,
-        "azure_openai_deployment":  settings.AZURE_OPENAI_DEPLOYMENT,
+        "azure_openai_deployment": settings.AZURE_OPENAI_DEPLOYMENT,
     }
 
     # Vault sentinel: refuse to start in non-local environments if JWT secret

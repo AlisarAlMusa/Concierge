@@ -43,9 +43,9 @@ async def test_shared_client_attaches_service_token_to_every_request() -> None:
 
     assert len(captured) == 3
     for request in captured:
-        assert request.headers.get("X-Service-Token") == TEST_SERVICE_TOKEN, (
-            f"{request.method} {request.url} missing or wrong X-Service-Token header"
-        )
+        assert (
+            request.headers.get("X-Service-Token") == TEST_SERVICE_TOKEN
+        ), f"{request.method} {request.url} missing or wrong X-Service-Token header"
 
 
 @pytest.mark.asyncio
@@ -66,9 +66,7 @@ async def test_per_call_header_override_is_possible_but_not_required() -> None:
         transport=httpx.MockTransport(_handler),
     )
     try:
-        await shared.post(
-            "http://x/y", headers={"X-Service-Token": "override-token"}, json={}
-        )
+        await shared.post("http://x/y", headers={"X-Service-Token": "override-token"}, json={})
     finally:
         await shared.aclose()
 
