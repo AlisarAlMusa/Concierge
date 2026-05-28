@@ -51,11 +51,71 @@ consulted and the dependency rejects every request with 403 (a warning is
 logged on boot). Set `SERVICE_AUTH_SECRET` in `.env` for offline work; the
 warning is intentional and tells you you're in fallback mode.
 
+## Migrations
+
+Apply the full chain on a fresh database:
+
+```bash
+cd backend
+uv run alembic upgrade head
+```
+
+The current linear chain is:
+
+```
+0001_initial
+  → 0002_cms_chunks
+  → 0003_users_roles
+  → 0003b_chat_persistence
+  → 0004_cms_pages
+  → 0004b_post_cms_extras       (guardrail_configs, retro RLS, deferred cms_chunks FK)
+  → 0005_leads_admin_fields     (head)
+```
+
+Verify with `uv run alembic heads` — there must be exactly one head
+(`0005_leads_admin`). `uv run alembic upgrade head` succeeds on a fresh
+database against pgvector + pgcrypto.
+
+### Existing local databases — version-row reset
+
+Stacks created **before** this repair may have an `alembic_version` row
+holding one of the now-renamed revision ids (`"0003"` referring to chat
+persistence, or `"0004"` referring to the removed `0004_remaining_tables`).
+Alembic will refuse to advance from those ids because they no longer
+exist in the version directory.
+
+Fastest fix is to drop the local database and re-apply:
+
+```bash
+docker compose down -v        # nukes the postgres volume
+docker compose up -d postgres
+docker compose exec api uv run alembic upgrade head
+```
+
+If you must preserve data, manually re-stamp the version row to the
+matching new id (run the SQL on the existing DB only — never on a fresh
+one):
+
+```sql
+-- chat-persistence stamp (old "0003" via 0003_chat_persistence.py)
+UPDATE alembic_version SET version_num = '0003b_chat_persistence'
+ WHERE version_num = '0003'
+   AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'widgets');
+
+-- post-cms-extras stamp (old "0004" via 0004_remaining_tables.py)
+UPDATE alembic_version SET version_num = '0004b_post_cms_extras'
+ WHERE version_num = '0004'
+   AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'guardrail_configs');
+```
+
+After re-stamping, `uv run alembic upgrade head` will continue cleanly.
+
 ## Demo seed data (Owner B)
 
-After the stack is up and migrations `0001`–`0003` have applied, run the
-seed script to populate one tenant, one widget, and a small RAG corpus
-covering pricing / refunds / shipping / support / product overview.
+After the stack is up and migrations have applied (chain ends at
+`0005_leads_admin`), run the seed script to populate one tenant, one
+widget, and a small RAG corpus covering pricing / refunds / shipping /
+support / product overview.
 Re-running is safe — the script is idempotent (Tenant + Widget upsert by
 natural key; CMS chunks are written via `RagService.index_page` which
 delete-then-inserts per `(tenant_id, page_id)`).
