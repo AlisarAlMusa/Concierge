@@ -10,6 +10,7 @@ from app.api.routes import (
     escalations,
     health,
     leads,
+    public,
     tenants,
     widgets,
 )
@@ -30,3 +31,8 @@ api_router.include_router(chat.router, prefix="/chat")
 api_router.include_router(leads.router, prefix="/leads")
 api_router.include_router(escalations.router, prefix="/escalations")
 api_router.include_router(costs.router, prefix="/costs")
+# Public widget runtime surface (Spec 011). Aliases the session + chat
+# handlers under ``/public/*`` and adds ``GET /public/widgets/config``.
+# The original ``/widgets/session`` and ``/chat`` routes are intentionally
+# retained as backward-compatible duplicates.
+api_router.include_router(public.router, prefix="/public")

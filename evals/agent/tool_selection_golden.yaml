@@ -1,0 +1,121 @@
+# Agent tool-selection golden set
+#
+# Fifteen examples that exercise the bounded tool-calling agent's first
+# move on the "agent" router branch. The hybrid architecture is:
+#
+#   inbound chat turn
+#     │
+#     ▼
+#   RouterService (LLM classifier)
+#     │
+#     ├── faq        → RAG fast-path (no agent)
+#     ├── sales      → sales path
+#     ├── human      → escalation path
+#     ├── spam       → drop
+#     └── ambiguous / low_confidence / unknown → AgentService
+#                                                  │
+#                                                  ▼
+#                                          chooses ONE tool first turn:
+#                                            * rag_search
+#                                            * capture_lead
+#                                            * escalate
+#                                            * no_tool   (direct LLM reply)
+#
+# Each example is a single visitor utterance plus the tool the agent
+# SHOULD invoke on its first iteration. ``expected_reason`` is a short
+# operator-readable rationale used by the eval report and by humans
+# reviewing disagreements.
+#
+# Source-of-truth for tool semantics:
+#   * rag_search  — answer factually from tenant CMS content.
+#   * capture_lead — visitor expresses commercial interest AND supplies
+#     enough identifying info (email / company / explicit ask to be
+#     contacted).
+#   * escalate    — visitor explicitly asks for a human, expresses
+#     frustration, reports an outage, or describes a problem outside the
+#     agent's scope.
+#   * no_tool     — direct LLM reply: greetings, capability questions
+#     about the bot itself, ambiguous clarification requests.
+
+tenant_slug: demo
+schema_version: 1
+
+examples:
+  # ===== rag_search (6) ===================================================
+  - id: rag_pricing_question
+    user_message: "How much does the Growth plan cost per month?"
+    expected_tool: rag_search
+    expected_reason: "Concrete factual question — pricing is in the seeded CMS corpus."
+
+  - id: rag_refund_window
+    user_message: "What's your refund window after I sign up?"
+    expected_tool: rag_search
+    expected_reason: "Policy lookup — refund-policy page covers the 30-day window."
+
+  - id: rag_support_hours
+    user_message: "When are you open for live chat support?"
+    expected_tool: rag_search
+    expected_reason: "Operational fact — support-hours page lists the window."
+
+  - id: rag_widget_install
+    user_message: "How do I install the widget on my Webflow site?"
+    expected_tool: rag_search
+    expected_reason: "How-to question — shipping page documents the JS snippet flow."
+
+  - id: rag_enterprise_sso
+    user_message: "Does the Enterprise plan include SSO?"
+    expected_tool: rag_search
+    expected_reason: "Feature lookup — pricing page enumerates Enterprise inclusions."
+
+  - id: rag_overage_fees
+    user_message: "What happens if I go over my monthly conversation limit?"
+    expected_tool: rag_search
+    expected_reason: "Policy detail — pricing page explicitly covers overage behavior."
+
+  # ===== capture_lead (3) =================================================
+  - id: lead_demo_request_with_email
+    user_message: "I'm evaluating you against Intercom — can someone reach out at jane@acme.example?"
+    expected_tool: capture_lead
+    expected_reason: "Commercial intent + explicit contact info — classic lead capture."
+
+  - id: lead_pricing_for_team
+    user_message: "We have 60 agents at Acme Corp and need a quote. Email me at ops@acme.example."
+    expected_tool: capture_lead
+    expected_reason: "Sales lead with company name, team size, and email — capture before answering."
+
+  - id: lead_callback_request
+    user_message: "Can a sales rep call me tomorrow? +1-415-555-0123, evenings work best."
+    expected_tool: capture_lead
+    expected_reason: "Explicit ask for human follow-up with phone contact — lead."
+
+  # ===== escalate (3) =====================================================
+  - id: escalate_outage_report
+    user_message: "Our widget is down for everyone on our production site — this is urgent."
+    expected_tool: escalate
+    expected_reason: "Reported production outage — must reach a human, not a RAG lookup."
+
+  - id: escalate_explicit_human_ask
+    user_message: "Stop sending me canned answers. I want to talk to a real person now."
+    expected_tool: escalate
+    expected_reason: "Explicit request for a human + frustration — escalate immediately."
+
+  - id: escalate_billing_dispute
+    user_message: "You charged my card twice last week and I want this fixed by a human, not a bot."
+    expected_tool: escalate
+    expected_reason: "Billing dispute outside corpus scope + explicit human ask — escalate."
+
+  # ===== no_tool (3) ======================================================
+  - id: no_tool_greeting
+    user_message: "hi"
+    expected_tool: no_tool
+    expected_reason: "Bare greeting — direct LLM reply, no retrieval needed."
+
+  - id: no_tool_capability_meta
+    user_message: "What can you help me with?"
+    expected_tool: no_tool
+    expected_reason: "Meta question about the bot's own scope — answer from system prompt, not RAG."
+
+  - id: no_tool_clarification_request
+    user_message: "wait, what was the last thing you said?"
+    expected_tool: no_tool
+    expected_reason: "Conversation-context clarification — handled by memory + LLM, not a tool."

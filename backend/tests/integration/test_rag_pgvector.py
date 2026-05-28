@@ -146,7 +146,14 @@ async def test_end_to_end_index_then_search(session: AsyncSession) -> None:
     await session.commit()
     assert written >= 1
 
-    result = await svc.search(query="what are your hours", tenant_id=TENANT_A)
+    # ``published_only=False`` keeps this integration test focused on
+    # pgvector mechanics — the publication-filter JOIN is covered by
+    # dedicated unit tests + the eval script. Inserting matching
+    # ``cms_pages`` rows here would couple this file to a model
+    # whose schema is already exercised elsewhere.
+    result = await svc.search(
+        query="what are your hours", tenant_id=TENANT_A, published_only=False
+    )
     assert len(result.chunks) >= 1
     assert any(c.source_page_id == page for c in result.chunks)
     assert result.chunks[0].score >= 0.99  # cos_sim=1 → score=1
@@ -165,7 +172,8 @@ async def test_cross_tenant_isolation(session: AsyncSession) -> None:
     await session.commit()
 
     # B searches — must get zero results, because tenant_id filter is explicit.
-    result = await svc.search(query="anything", tenant_id=TENANT_B)
+    # ``published_only=False`` matches the integration-test scope above.
+    result = await svc.search(query="anything", tenant_id=TENANT_B, published_only=False)
     assert result.chunks == []
     assert result.total_found == 0
 
@@ -192,7 +200,9 @@ async def test_top_k_ordering(session: AsyncSession) -> None:
         await svc.index_page(tenant_id=TENANT_A, page_id=uuid4(), content=content)
     await session.commit()
 
-    result = await svc.search(query="q", tenant_id=TENANT_A, max_chunks=3)
+    result = await svc.search(
+        query="q", tenant_id=TENANT_A, max_chunks=3, published_only=False
+    )
     assert [c.text for c in result.chunks] == ["best match", "ok match", "far match"]
     assert result.chunks[0].score > result.chunks[1].score > result.chunks[2].score
 
@@ -213,7 +223,9 @@ async def test_delete_page_removes_only_named_page(session: AsyncSession) -> Non
     await session.commit()
     assert deleted >= 1
 
-    result = await svc.search(query="q", tenant_id=TENANT_A, max_chunks=5)
+    result = await svc.search(
+        query="q", tenant_id=TENANT_A, max_chunks=5, published_only=False
+    )
     page_ids = {c.source_page_id for c in result.chunks}
     assert page_a not in page_ids
     assert page_b in page_ids
