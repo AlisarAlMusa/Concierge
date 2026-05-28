@@ -10,4 +10,5 @@ dependencies = [
     "pydantic-settings>=2.2",
     "structlog>=24.1",
     "tenacity>=8.3",
+    "cohere>=5.0.0",
 ]
