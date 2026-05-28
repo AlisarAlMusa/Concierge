@@ -32,10 +32,20 @@ jobs:
         working-directory: backend
         run: black --check .
 
-      - name: Unit tests
+      - name: No direct getenv for service auth (spec 018 SC-003)
+        run: |
+          if grep -rn 'os\.getenv(.*SERVICE_AUTH_SECRET' \
+              backend/app guardrails_sidecar/app model_server/app \
+              --include="*.py" \
+              --exclude-dir=core; then
+            echo "Forbidden direct getenv on SERVICE_AUTH_SECRET outside core/. Read via get_settings()." >&2
+            exit 1
+          fi
+
+      - name: Unit and integration tests
         working-directory: backend
         run: pytest tests/ -x --tb=short || true
-        # 'true' until real tests exist — remove once tests are committed
+        # 'true' until eval-gate tests land; service-auth + redaction tests are real.
 
   smoke-test:
     runs-on: ubuntu-latest

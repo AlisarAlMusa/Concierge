@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,9 +13,13 @@ async def get_redis(request: Request) -> aioredis.Redis:
     return request.app.state.redis
 
 
-async def get_secrets(request: Request) -> dict[str, str]:
-    """Return the secrets dict populated from Vault at startup."""
-    return request.app.state.secrets
+async def get_service_client(request: Request) -> httpx.AsyncClient:
+    """Authenticated shared client for outbound sidecar calls (spec 018).
+
+    The `X-Service-Token` header is pre-attached at lifespan construction —
+    service-layer code must NOT add it per call.
+    """
+    return request.app.state.service_client
 
 
 async def get_session(

@@ -1,8 +1,7 @@
 """HashiCorp Vault client — single entry point for the shared service credential.
 
-Phase 1 (spec 018): only one operation is exposed, `fetch_service_token()`. It
-is called once during application startup by `get_settings()`; the value is
-cached on the settings singleton and never re-fetched at request time.
+Phase 1 (spec 018): only `fetch_service_token()` is exposed. See the backend's
+equivalent at `backend/app/core/vault.py` for the architectural rationale.
 
 Never log the token value. Log path + addr only.
 """
@@ -30,22 +29,6 @@ def fetch_service_token(
     mount_point: str = "kv",
     timeout: float = 2.0,
 ) -> str:
-    """Read `kv/<secret_path>` from Vault and return the `token` field.
-
-    Args:
-        addr: Vault HTTP address, e.g. `http://vault:8200`.
-        token: The Vault auth token used to authenticate this fetch (root token
-            in Phase 1; AppRole-derived in Phase 2).
-        secret_path: Path under the KV v2 mount, e.g. `concierge/service-auth`.
-        mount_point: The KV mount name (defaults to `kv`).
-        timeout: HTTP timeout for the Vault call.
-
-    Returns:
-        The service token string.
-
-    Raises:
-        VaultUnavailable: on any failure path — auth, missing secret, short value.
-    """
     try:
         client = hvac.Client(url=addr, token=token, timeout=timeout)
         if not client.is_authenticated():

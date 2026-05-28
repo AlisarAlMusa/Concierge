@@ -222,6 +222,10 @@ X-Service-Token: <SERVICE_AUTH_SECRET>
 The receiving service calls `verify_service_token(token)` from `backend/app/core/security.py`
 (or the equivalent in each sidecar). A missing or wrong token → 403.
 
+`SERVICE_AUTH_SECRET` is sourced from HashiCorp Vault (`kv/concierge/service-auth`,
+key `token`) at startup when `APP_ENV != "local"` — see [spec 018](../specs/018-service-to-service-auth/spec.md).
+In `local` mode the value falls back to `.env` and a warning is logged.
+
 CORS and network adjacency are not authentication.
 
 ---

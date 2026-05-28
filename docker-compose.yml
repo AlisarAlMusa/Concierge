@@ -7,6 +7,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      phoenix:
+        condition: service_started
       vault-init:
         condition: service_completed_successfully
     ports:
@@ -21,6 +23,9 @@ services:
   model_server:
     build: ./model_server
     env_file: .env
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "8001:8001"
     healthcheck:
@@ -32,6 +37,9 @@ services:
   guardrails_sidecar:
     build: ./guardrails_sidecar
     env_file: .env
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "8002:8002"
     healthcheck:
@@ -96,6 +104,13 @@ services:
     volumes:
       - minio_data:/data
 
+  phoenix:
+    image: arizeai/phoenix:latest
+    ports:
+      - "6006:6006"   # UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+
   vault:
     image: hashicorp/vault:latest
     cap_add:
@@ -107,7 +122,7 @@ services:
       - "8200:8200"
     command: server -dev
     healthcheck:
-      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status"]
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -115,16 +130,15 @@ services:
 
   vault-init:
     image: hashicorp/vault:latest
-    cap_add:
-      - IPC_LOCK
     depends_on:
       vault:
         condition: service_healthy
     env_file: .env
     volumes:
-      - ./scripts/vault-init.sh:/vault-init.sh:ro
-    command: sh /vault-init.sh
+      - ./scripts/seed_vault.sh:/seed_vault.sh:ro
+    command: sh /seed_vault.sh
     restart: "no"
+    
 
 volumes:
   postgres_data:
