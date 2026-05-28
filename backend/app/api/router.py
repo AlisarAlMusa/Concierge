@@ -16,6 +16,9 @@ from app.api.routes import (
 api_router = APIRouter()
 
 api_router.include_router(health.router)
+# Custom auth routes (register, login, logout, /me) — replaces the fastapi-users
+# default routers so we can enforce rate limiting, audit logging, and our
+# platform error contract.
 api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(tenants.router, prefix="/platform/tenants")
 api_router.include_router(admin_config.router, prefix="/tenant")
