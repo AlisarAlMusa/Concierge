@@ -50,3 +50,9 @@ htmlcov/
 
 #agent
 .claude/
+
+# Eval artifacts — committed: golden_set.json + golden_set.sha256.
+# Not committed: per-run report and LLM response cache (provider keys + costs
+# vary across machines; cache rebuilds itself on first hit).
+evals/classifier/last_report.json
+evals/classifier/.cache/
