@@ -1,2 +1,1 @@
-# Refusal Prompt
-TODO: Person C — write the default refusal message template.
+I'm sorry, I wasn't able to find an answer to that in this business's content. If you'd like, I can take down your contact details so someone can follow up with you directly, or I can connect you with a person.
