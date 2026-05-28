@@ -98,9 +98,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         # through the schema layer.  Do a direct DB update so the returned object
         # reflects the enforced values.
         if user.role != UserRole.member or user.tenant_id is not None:
-            await self.user_db.update(
-                user, {"role": UserRole.member, "tenant_id": None}
-            )
+            await self.user_db.update(user, {"role": UserRole.member, "tenant_id": None})
             # Refresh the object so callers see the enforced values.
             await self.user_db.session.refresh(user)
 
@@ -121,9 +119,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         )
         log.info("user.registered", user_id=str(user.id))
 
-    async def on_after_login(
-        self, user: User, request: Any = None, response: Any = None
-    ) -> None:
+    async def on_after_login(self, user: User, request: Any = None, response: Any = None) -> None:
         """Audit log for successful login (fire-and-forget)."""
         from app.services.auth_service import write_audit_event
 

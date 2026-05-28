@@ -175,11 +175,17 @@ async def invite_admin(
 
     result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
-    if tenant is None or tenant.status != TenantStatus.active:
+    if tenant is None or tenant.status in (TenantStatus.deleting, TenantStatus.deleted):
         raise HTTPException(
             status_code=404,
-            detail="Tenant not found or not active",
+            detail="Tenant not found",
             headers={"X-Error-Code": "not_found"},
+        )
+    if tenant.status == TenantStatus.suspended:
+        raise HTTPException(
+            status_code=422,
+            detail="Cannot invite admin for a suspended tenant",
+            headers={"X-Error-Code": "tenant_not_active"},
         )
 
     # Check for duplicate email.

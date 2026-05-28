@@ -24,6 +24,8 @@ Non-negotiable rules enforced here
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
+from uuid import UUID
 
 import httpx
 import redis.asyncio as aioredis
@@ -34,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import fastapi_users_instance
 from app.db.rls import reset_tenant_context, set_tenant_context
 from app.db.session import get_db_session
+from app.models.tenant import TenantStatus
 from app.models.user import User, UserRole
 
 log = structlog.get_logger(__name__)
@@ -151,8 +154,66 @@ async def require_tenant_admin(
             detail="User has no tenant_id — data integrity error",
         )
 
+    # Enforce suspension/deletion at the dependency layer so it takes effect
+    # within one request of the status change (SC-005).
+    from sqlalchemy import select
+
+    from app.models.tenant import Tenant
+
+    result = await session.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if tenant is None or tenant.status == TenantStatus.deleted:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant not found or deleted",
+            headers={"X-Error-Code": "permission_denied"},
+        )
+    if tenant.status == TenantStatus.suspended:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant is suspended",
+            headers={"X-Error-Code": "tenant_suspended"},
+        )
+    if tenant.status == TenantStatus.deleting:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant is being deleted",
+            headers={"X-Error-Code": "permission_denied"},
+        )
+
     try:
         await set_tenant_context(session, user.tenant_id)
         yield user
     finally:
         await reset_tenant_context(session)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Widget / chat dependencies — stubs (implemented in spec 011 widget)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def get_tenant_id(request: Request) -> "UUID":
+    """Extract tenant_id from the verified widget session token. Stub — spec 011."""
+
+    raise HTTPException(status_code=501, detail="Widget token auth not yet implemented")
+
+
+async def get_widget_id(request: Request) -> "UUID":
+    """Extract widget_id from the verified widget session token. Stub — spec 011."""
+    raise HTTPException(status_code=501, detail="Widget token auth not yet implemented")
+
+
+async def get_visitor_session_id(request: Request) -> "UUID":
+    """Extract visitor_session_id from the verified widget session token. Stub — spec 011."""
+    raise HTTPException(status_code=501, detail="Widget token auth not yet implemented")
+
+
+if TYPE_CHECKING:
+    from app.services.chat_orchestrator import ChatOrchestrator
+
+
+async def get_chat_orchestrator(request: Request) -> "ChatOrchestrator":
+    """Provide a ChatOrchestrator instance. Stub — spec 009."""
+
+    raise HTTPException(status_code=501, detail="Chat orchestrator not yet configured")

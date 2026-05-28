@@ -20,15 +20,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 async def main() -> None:
     import structlog
+    from fastapi_users.password import PasswordHelper
 
     from app.core.config import get_settings
     from app.db.session import close_engine, get_engine, get_session_factory
     from app.models.tenant import Tenant, TenantStatus
     from app.models.user import User, UserRole
-    from fastapi_users.password import PasswordHelper
 
     log = structlog.get_logger("seed")
-    settings = get_settings()
+    get_settings()
 
     get_engine()
     factory = get_session_factory()

@@ -126,9 +126,7 @@ async def client(setup_db):
 
 async def register_user(client: AsyncClient, email: str, password: str, **extra) -> AsyncClient:
     """POST /auth/register and return the response."""
-    return await client.post(
-        "/auth/register", json={"email": email, "password": password, **extra}
-    )
+    return await client.post("/auth/register", json={"email": email, "password": password, **extra})
 
 
 async def login_user(client: AsyncClient, email: str, password: str) -> str:
@@ -208,9 +206,7 @@ async def test_logout_revokes_token(client):
     assert me_resp.status_code == 200
 
     # Logout.
-    logout_resp = await client.post(
-        "/auth/logout", headers={"Authorization": f"Bearer {token}"}
-    )
+    logout_resp = await client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert logout_resp.status_code == 204
 
     # Reuse the same token — must fail with token_revoked.
@@ -254,9 +250,7 @@ async def test_tenant_admin_403_on_platform_route(client):
     await register_user(client, email="ta_platform@example.com", password="SecurePass!1")
     token = await login_user(client, "ta_platform@example.com", "SecurePass!1")
 
-    resp = await client.get(
-        "/platform/tenants/", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await client.get("/platform/tenants/", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
     body = resp.json()
     assert body.get("code") == "permission_denied", f"Expected permission_denied, got: {body}"
@@ -268,9 +262,7 @@ async def test_tenant_manager_403_on_tenant_content(client):
     await register_user(client, email="tm_tenant@example.com", password="SecurePass!1")
     token = await login_user(client, "tm_tenant@example.com", "SecurePass!1")
 
-    resp = await client.get(
-        "/tenant/config", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await client.get("/tenant/config", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
     body = resp.json()
     assert body.get("code") == "permission_denied", f"Expected permission_denied, got: {body}"
@@ -321,9 +313,7 @@ async def test_rls_context_reset_after_request(client):
 
     # Two consecutive requests — RLS state must not bleed across them.
     for _ in range(2):
-        resp = await client.get(
-            "/cms/pages", headers={"Authorization": f"Bearer {token}"}
-        )
+        resp = await client.get("/cms/pages", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
         assert resp.json().get("code") == "permission_denied"
 

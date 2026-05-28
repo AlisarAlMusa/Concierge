@@ -3,3 +3,12 @@
 # Message fields: id, tenant_id, conversation_id, role (visitor/assistant/tool/system),
 #                 content_redacted, metadata jsonb, created_at
 # Then uncomment the import in backend/app/db/base.py
+
+import enum
+
+
+class MessageRole(str, enum.Enum):
+    visitor = "visitor"
+    assistant = "assistant"
+    tool = "tool"
+    system = "system"
