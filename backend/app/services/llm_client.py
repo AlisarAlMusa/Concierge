@@ -206,4 +206,13 @@ def _to_llm_response(completion: Any) -> LLMResponse:
             )
         )
 
-    return LLMResponse(content=content, tool_calls=tool_calls)
+    usage = getattr(completion, "usage", None)
+    input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+    output_tokens = getattr(usage, "completion_tokens", 0) or 0
+
+    return LLMResponse(
+        content=content,
+        tool_calls=tool_calls,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )

@@ -41,6 +41,19 @@ logger = structlog.get_logger(__name__)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+class SlugConflictError(Exception):
+    """Raised when a PATCH would collide with an existing ``(tenant_id, slug)``.
+
+    Distinct from the upsert path used by ``create_page``: an explicit PATCH
+    asks for a specific page by id, so a slug collision with a *different*
+    page is unambiguously a conflict (HTTP 409) rather than an upsert.
+    """
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+        super().__init__(f"slug {slug!r} is already taken for this tenant")
+
+
 def derive_slug(title: str) -> str:
     """Lower-case, hyphen-separated slug from a free-form title.
 
@@ -157,6 +170,206 @@ class CmsPageService:
         """Return one page or ``None`` if absent / cross-tenant."""
         stmt = select(CmsPage).where(CmsPage.tenant_id == tenant_id, CmsPage.id == page_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def update_page(
+        self,
+        *,
+        tenant_id: UUID,
+        page_id: UUID,
+        title: str | None = None,
+        slug: str | None = None,
+        body: str | None = None,
+        status: CmsPageStatus | None = None,
+    ) -> CmsPageWriteResult | None:
+        """Partial update of a single page. Returns ``None`` if not found.
+
+        Reindex policy (Spec 005 FR-004 + FR-009):
+
+        * ``body`` change on a page whose final status is ``published`` →
+          re-route the new body through ``RagService.index_page`` (which is
+          itself a delete-then-insert per ``(tenant_id, page_id)``).
+        * Final status flipped to ``draft`` → drop any chunks via
+          ``RagService.delete_page`` so the "draft pages MUST NOT be
+          indexed" invariant is held even when a page is unpublished.
+        * Slug change → enforce ``(tenant_id, slug)`` uniqueness at the
+          service layer with a clear ``SlugConflictError`` instead of
+          letting a Postgres ``IntegrityError`` surface as a 500.
+        """
+        page = await self.get_page(tenant_id=tenant_id, page_id=page_id)
+        if page is None:
+            return None
+
+        original_status = page.status
+        body_changed = body is not None and body != page.body
+
+        if title is not None:
+            if not title.strip():
+                raise ValueError("update_page: title must be non-empty")
+            page.title = title.strip()
+
+        if slug is not None:
+            new_slug = slug.strip().lower()
+            if not new_slug:
+                raise ValueError("update_page: slug must be non-empty")
+            if new_slug != page.slug:
+                clash = await self._lookup_by_slug(tenant_id=tenant_id, slug=new_slug)
+                if clash is not None and clash.id != page.id:
+                    raise SlugConflictError(new_slug)
+                page.slug = new_slug
+
+        if body is not None:
+            if not body.strip():
+                raise ValueError("update_page: body must be non-empty")
+            page.body = body
+
+        if status is not None:
+            page.status = status
+
+        await self._session.flush()
+
+        chunks_written = 0
+        # Final-state checks (Spec 005 FR-004 + FR-009).
+        if page.status == CmsPageStatus.draft and original_status == CmsPageStatus.published:
+            # Page was unpublished — purge stale chunks so retrieval can never
+            # return a draft page's content.
+            await self._rag.delete_page(tenant_id=tenant_id, page_id=page.id)
+        elif page.status == CmsPageStatus.published and body_changed:
+            chunks_written = await self._rag.index_page(
+                tenant_id=tenant_id,
+                page_id=page.id,
+                content=page.body,
+            )
+
+        logger.info(
+            "cms_page.patched",
+            tenant_id=str(tenant_id),
+            page_id=str(page.id),
+            slug=page.slug,
+            body_changed=body_changed,
+            status=page.status.value,
+            chunks_written=chunks_written,
+        )
+        return CmsPageWriteResult(page=page, chunks_written=chunks_written)
+
+    async def delete_page(self, *, tenant_id: UUID, page_id: UUID) -> bool:
+        """Delete a page and its chunks. Returns ``True`` if removed, ``False`` if absent.
+
+        Chunks are deleted first via ``RagService.delete_page`` because
+        ``cms_chunks.page_id`` does not yet have an FK to ``cms_pages.id``
+        (intentional — see migration 0004 comment). Both deletes run in
+        the caller's transaction so the request is atomic.
+        """
+        page = await self.get_page(tenant_id=tenant_id, page_id=page_id)
+        if page is None:
+            return False
+
+        chunks_deleted = await self._rag.delete_page(tenant_id=tenant_id, page_id=page_id)
+        await self._session.delete(page)
+        await self._session.flush()
+        logger.info(
+            "cms_page.deleted",
+            tenant_id=str(tenant_id),
+            page_id=str(page_id),
+            slug=page.slug,
+            chunks_deleted=chunks_deleted,
+        )
+        return True
+
+    async def publish_page(self, *, tenant_id: UUID, page_id: UUID) -> CmsPageWriteResult | None:
+        """Flip status to ``published`` and re-index the body. ``None`` if absent.
+
+        Idempotent: re-publishing an already-published page still re-indexes
+        (Spec 005 FR-006). The reindex goes through ``RagService.index_page``,
+        which is itself a delete-then-insert per ``(tenant_id, page_id)``.
+        """
+        page = await self.get_page(tenant_id=tenant_id, page_id=page_id)
+        if page is None:
+            return None
+
+        page.status = CmsPageStatus.published
+        await self._session.flush()
+
+        chunks_written = await self._rag.index_page(
+            tenant_id=tenant_id,
+            page_id=page.id,
+            content=page.body,
+        )
+        logger.info(
+            "cms_page.published",
+            tenant_id=str(tenant_id),
+            page_id=str(page.id),
+            slug=page.slug,
+            chunks_written=chunks_written,
+        )
+        return CmsPageWriteResult(page=page, chunks_written=chunks_written)
+
+    async def reindex_page(self, *, tenant_id: UUID, page_id: UUID) -> CmsPageWriteResult | None:
+        """Reindex one page in place. ``None`` if absent.
+
+        Spec 005 FR-007 / edge case: draft pages are a no-op (FR-009 says
+        draft pages MUST NOT be indexed). The single call to
+        ``RagService.index_page`` covers FR-007's "delete existing chunks
+        for the page and re-trigger the embedding pipeline" because
+        ``index_page`` is itself idempotent and delete-then-inserts.
+        """
+        page = await self.get_page(tenant_id=tenant_id, page_id=page_id)
+        if page is None:
+            return None
+
+        if page.status != CmsPageStatus.published:
+            logger.info(
+                "cms_page.reindex_skipped_draft",
+                tenant_id=str(tenant_id),
+                page_id=str(page.id),
+            )
+            return CmsPageWriteResult(page=page, chunks_written=0)
+
+        chunks_written = await self._rag.index_page(
+            tenant_id=tenant_id,
+            page_id=page.id,
+            content=page.body,
+        )
+        logger.info(
+            "cms_page.reindexed",
+            tenant_id=str(tenant_id),
+            page_id=str(page.id),
+            slug=page.slug,
+            chunks_written=chunks_written,
+        )
+        return CmsPageWriteResult(page=page, chunks_written=chunks_written)
+
+    async def reindex_all(self, *, tenant_id: UUID) -> tuple[int, int]:
+        """Reindex every published page for ``tenant_id``.
+
+        Returns ``(pages_reindexed, chunks_written)``. Runs synchronously
+        and in order — fine for the seed corpus (Spec 005 SC-005 caps a
+        tenant at 500 pages). Spec edge case mentions a 202-accepted
+        background-job path for 100+ pages; implementing the queue lives
+        with the worker service and is intentionally out of scope here.
+        """
+        stmt = (
+            select(CmsPage)
+            .where(CmsPage.tenant_id == tenant_id)
+            .where(CmsPage.status == CmsPageStatus.published)
+            .order_by(CmsPage.created_at.asc())
+        )
+        pages = list((await self._session.execute(stmt)).scalars().all())
+
+        total_chunks = 0
+        for page in pages:
+            total_chunks += await self._rag.index_page(
+                tenant_id=tenant_id,
+                page_id=page.id,
+                content=page.body,
+            )
+
+        logger.info(
+            "cms.reindex_all.completed",
+            tenant_id=str(tenant_id),
+            pages_reindexed=len(pages),
+            chunks_written=total_chunks,
+        )
+        return len(pages), total_chunks
 
     async def _lookup_by_slug(self, *, tenant_id: UUID, slug: str) -> CmsPage | None:
         stmt = select(CmsPage).where(CmsPage.tenant_id == tenant_id, CmsPage.slug == slug)
