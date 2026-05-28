@@ -359,7 +359,6 @@ layer plus the `cms_pages_tenant_isolation` RLS policy enforces this on
 the read path. The write path enforces it on insert via the same RLS
 `WITH CHECK` clause.
 
-<<<<<<< HEAD
 ## Admin leads & escalations (Owner B, Spec 012)
 
 The agent writes leads via the `capture_lead` tool and escalations via
@@ -443,7 +442,7 @@ Valid transitions: `open` → `in_progress` → `resolved` (or `dismissed`).
 The route intentionally does **not** flip the parent `Conversation.status`
 back to `active` on resolve — that side effect needs explicit product
 design and is out of this PR's scope.
-=======
+
 ### Edit, unpublish, delete, and reindex (Spec 005 FR-004 → FR-008)
 
 The CMS surface exposes the full edit lifecycle. All routes share the
@@ -505,13 +504,3 @@ Slug changes on PATCH are validated server-side: a slug already taken
 by a *different* page for the same tenant returns `409 conflict` rather
 than silently upserting (that path is only available through
 `POST /cms/pages`).
->>>>>>> main
-<<<<<<<
-<<<<<<<
-
-e
-x
-it
-
-X
-
