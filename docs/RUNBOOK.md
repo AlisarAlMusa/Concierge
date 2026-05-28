@@ -248,3 +248,87 @@ Each tenant sees only its own pages — `WHERE tenant_id = $1` at the SQL
 layer plus the `cms_pages_tenant_isolation` RLS policy enforces this on
 the read path. The write path enforces it on insert via the same RLS
 `WITH CHECK` clause.
+
+## Admin leads & escalations (Owner B, Spec 012)
+
+The agent writes leads via the `capture_lead` tool and escalations via
+the `escalate` tool — both go through `LeadService.capture` /
+`EscalationService.create` on the widget-token path. The admin surfaces
+below are read-only-plus-status-edit views on the same rows, gated by
+the same `X-Service-Token` + `X-Tenant-Id` headers as `/cms`.
+
+Per Spec 012 Assumptions, there is **no** `DELETE /escalations` route —
+removing an escalation belongs to the tenant erasure flow (feature 015).
+`DELETE /leads/{lead_id}` is a hard delete; the row is gone from the DB
+once the call returns 204.
+
+### List leads
+
+```bash
+curl -s "http://localhost:8000/leads?limit=50&offset=0" \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" | jq '.total, .items[] | .status + " " + .intent'
+# 12
+# "new purchase enterprise plan"
+# "contacted demo request"
+# ...
+```
+
+Default page size is 50 (Spec 012 Assumptions); `limit` is clamped to
+`[1, 500]`, `offset` to `>= 0`. Bad values return `422`.
+
+### Update a lead (status / notes)
+
+```bash
+curl -s -X PATCH http://localhost:8000/leads/$LEAD_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "contacted", "notes": "Left voicemail Tuesday 2pm."}'
+# → updated LeadRead with new status + notes + bumped updated_at
+```
+
+Either field is optional. Pass an empty `notes` string to clear notes.
+Only `status` and `notes` are admin-writable (Spec 012 FR-006); other
+columns are visitor-provided or pipeline-owned.
+
+### Delete a lead
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X DELETE http://localhost:8000/leads/$LEAD_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID"
+# → 204 on success, 404 if the lead does not exist for this tenant.
+```
+
+Cross-tenant deletes return 404 (never 403) — leaking existence across
+tenants is itself an isolation defect.
+
+### List escalations
+
+```bash
+curl -s http://localhost:8000/escalations \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" | jq '.total, .items[].status'
+# 3
+# "open"
+# "in_progress"
+# "resolved"
+```
+
+### Update escalation status
+
+```bash
+curl -s -X PATCH http://localhost:8000/escalations/$ESCALATION_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "resolved"}'
+# → updated EscalationRead with new status + bumped updated_at
+```
+
+Valid transitions: `open` → `in_progress` → `resolved` (or `dismissed`).
+The route intentionally does **not** flip the parent `Conversation.status`
+back to `active` on resolve — that side effect needs explicit product
+design and is out of this PR's scope.

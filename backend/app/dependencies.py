@@ -512,6 +512,46 @@ def get_cms_page_service(
     so a failed embedding pass rolls the page row back with it."""
     return CmsPageService(session=session, rag_service=rag_service)
 
+
+def get_admin_conversation_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+) -> ConversationService:
+    """ConversationService scoped to an admin-tenant session.
+
+    Distinct from ``get_conversation_service`` (widget-auth path) so the
+    admin escalations route doesn't pull in the widget token dependency
+    chain. The underlying service is identical — only the session source
+    differs.
+    """
+    return ConversationService(session=session)
+
+
+def get_admin_lead_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+    settings: Settings = Depends(get_settings),
+) -> LeadService:
+    """LeadService bound to the admin RLS session for ``/leads`` admin routes.
+
+    Same business logic as ``get_lead_service`` (widget path); only the
+    session source differs. The route layer is the one that gates on
+    ``X-Service-Token`` + ``X-Tenant-Id``.
+    """
+    return LeadService(session=session, settings=settings)
+
+
+def get_admin_escalation_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+    conversations: ConversationService = Depends(get_admin_conversation_service),
+) -> EscalationService:
+    """EscalationService bound to the admin RLS session for ``/escalations`` routes.
+
+    The injected ``ConversationService`` is unused by ``list_escalations`` /
+    ``update_escalation`` — it's a constructor requirement because the same
+    service also exposes ``create`` (which does flip the conversation
+    status). Keeping one service type avoids duplicating the model.
+    """
+    return EscalationService(session=session, conversation_service=conversations)
+
 def get_widget_service(
     session: AsyncSession = Depends(get_plain_db_session),
 ) -> WidgetService:
