@@ -61,7 +61,42 @@ On startup, the model server reads the SHA-256 hash from the model card and veri
 
 ---
 
-### User Story 4 — Lead Score Endpoint Scores a Visitor Message (Priority: P2)
+### User Story 4 — Held-Out "Golden Set" Is Derived From Test Data With Zero Training Leakage (Priority: P1)
+
+The evaluation pipeline depends on a small, stable evaluation set committed to the repo. The set MUST be derived **only** from the held-out test artifact that the trained models never saw — never from train or val splits. The derivation is deterministic (fixed seed) and stratified so that every intent label is represented in proportion to its frequency in the test set.
+
+**Why this priority**: CI gates that block merges on classifier regression are only meaningful if the eval set is itself trustworthy. A single row of train-set contamination invalidates every subsequent comparison. The "test-only, stratified, seeded" rule makes the data lineage auditable.
+
+**Independent Test**: Run `python evals/prepare_golden_set.py`. Confirm: (a) the script reads `model_server/artifacts/data/X_test_emb.npy` and `y_test.npy` and no other file; (b) the output `evals/classifier/golden_set.json` has 50–100 rows; (c) the row indices are a strict subset of `range(len(y_test))`; (d) every label in the output also appears in `y_test`; (e) re-running the script with the same seed produces a byte-identical file.
+
+**Acceptance Scenarios**:
+
+1. **Given** the test-data artifact exists, **When** `prepare_golden_set.py` is run, **Then** an output file is written with 50–100 rows and a deterministic SHA-256 (committed alongside the file).
+2. **Given** the script's source code, **When** reviewed, **Then** it imports only from `model_server/artifacts/data/*test*` paths — there is no path or filename containing `train` or `val`.
+3. **Given** the produced golden set, **When** inspected, **Then** each row carries `{index, label, embedding}`. (`text` field is included when raw test text is available — see Assumptions for the current gap.)
+4. **Given** stratified sampling, **When** the label distribution of the golden set is compared to the test set, **Then** the per-label proportions are within ±10% of the source distribution.
+
+---
+
+### User Story 5 — Three-Way Eval Harness Computes Macro-F1 and Gates CI on the Winner (Priority: P1)
+
+A single script (`evals/classifier/run_3way_eval.py`) loads the golden set, runs all three approaches against it, computes macro-F1 for each, picks the winner, and compares the winner against `eval_thresholds.yaml`. Below threshold → exit 1, blocking the merge. Above threshold → exit 0, with a structured report committed to the run logs.
+
+**Why this priority**: "Three numbers, one shipping decision" is the engineering grade. Manual comparisons rot; an automated harness with a hard threshold makes the decision auditable and prevents silent regression.
+
+**Independent Test**: Run `python evals/classifier/run_3way_eval.py`. Confirm: (a) the script prints macro-F1 for the classical, ONNX, and LLM zero-shot models on the same golden set; (b) the winner is identified; (c) exit code is 0 when the winner ≥ threshold and 1 when below; (d) a JSON report is written to `evals/classifier/last_report.json` with per-model scores and the resolved threshold.
+
+**Acceptance Scenarios**:
+
+1. **Given** all three artifacts (joblib, onnx, LLM creds) are available, **When** the eval runs, **Then** three macro-F1 numbers are printed and a winner is named.
+2. **Given** the winner's score ≥ `classifier.macro_f1_min`, **When** the script finishes, **Then** exit code is 0.
+3. **Given** the winner's score < threshold, **When** the script finishes, **Then** exit code is 1 and the failing model + score are emitted to stderr in a CI-parseable format.
+4. **Given** the LLM API is unreachable, **When** the script runs, **Then** the LLM baseline records `score=null` with a documented reason, the classical + ONNX scores are still computed, and the winner is selected among the available models. The exit code still reflects threshold compliance.
+5. **Given** the golden set is missing, **When** the script runs, **Then** it exits 2 (configuration error) with a clear message telling the user to run `prepare_golden_set.py`.
+
+---
+
+### User Story 6 — Lead Score Endpoint Scores a Visitor Message (Priority: P2)
 
 The model server exposes `POST /predict-lead-score`, which accepts a visitor message and returns a numeric lead quality score (0.0–1.0). This gates the `capture_lead` write — low-scoring messages are not written.
 
@@ -102,6 +137,14 @@ The model server exposes `POST /predict-lead-score`, which accepts a visitor mes
 - **FR-010**: The shipped classifier MUST achieve macro-F1 ≥ 0.75 on the held-out test set (gated in CI via `eval_thresholds.yaml`).
 - **FR-011**: All inference requests MUST have a timeout (configurable, default 500ms); slow requests return HTTP 503.
 - **FR-012**: The model server image MUST be under 500MB.
+- **FR-013**: The model server MUST load the joblib classical artifact AND the ONNX DL artifact at startup (lifespan), keep both in memory, and serve `POST /predict-intent` from whichever is named the "deployed" model in `model_card.json`. Loading happens once; per-request inference MUST NOT touch disk.
+- **FR-014**: `POST /predict-intent` MUST compute `confidence` as the maximum class probability. For the classical model, this is `predict_proba(x).max()`; for ONNX it is `softmax(logits).max()`. A raw decision-function score (no probability) MUST NOT be returned as `confidence`.
+- **FR-015**: `POST /predict-intent` MUST resolve `label` from a committed integer-to-string mapping (`model_server/artifacts/label_map.json`). If the mapping is absent at startup, the model server MUST refuse to start.
+- **FR-016**: `model_version` in the response MUST come from `model_card.json`. If the field is missing, the server fills `model_version` with the artifact's first 12 hex chars of SHA-256 — never `unknown`, never the empty string.
+- **FR-017**: A `prepare_golden_set.py` script under `evals/` MUST stratify-sample 50–100 rows **exclusively** from the test-split artifacts (`X_test_emb.npy`, `y_test.npy`, and the test text file). It MUST use a fixed numpy seed (committed) so re-runs are byte-identical. It MUST refuse to read any file whose name contains `train` or `val`.
+- **FR-018**: A `run_3way_eval.py` script under `evals/classifier/` MUST evaluate (a) the joblib classical model, (b) the ONNX DL model, (c) an LLM zero-shot baseline using the project's hosted LLM API, on the same `golden_set.json`. It MUST report macro-F1 per model, pick the highest scorer as the "winner", and compare the winner against `classifier.macro_f1_min` from `evals/eval_thresholds.yaml`. Exit 0 on pass, 1 on regression, 2 on configuration error.
+- **FR-019**: The LLM zero-shot baseline MUST send the **raw text** of each golden-set row to the LLM with a prompt that lists the allowed labels and asks for one-shot classification. The response MUST be parsed strictly — unparseable replies count as misclassifications, not exceptions.
+- **FR-020**: When the eval script runs, it MUST write `evals/classifier/last_report.json` containing: timestamp, golden-set SHA-256, per-model F1 (and per-class F1 if cheap), winner, threshold, pass/fail. This file is **not** committed (it is a CI artifact); the SHA-256 of the *golden set* IS committed alongside the golden set itself.
 
 ### Key Entities
 
@@ -122,6 +165,10 @@ The model server exposes `POST /predict-lead-score`, which accepts a visitor mes
 - **SC-004**: Startup hash check catches a tampered artifact in 100% of test cases.
 - **SC-005**: Model card documents all three comparison results; deployed choice is backed by at least two dimensions (e.g., F1 + latency).
 - **SC-006**: 100% of unauthenticated requests to model server endpoints receive 401/403.
+- **SC-007**: `prepare_golden_set.py` is byte-deterministic across runs on the same seed — diffing two outputs from independent clones returns no difference.
+- **SC-008**: `run_3way_eval.py` exits with code 1 within 60 seconds when the deployed model regresses below threshold, in 100% of injected-regression test cases.
+- **SC-009**: `prepare_golden_set.py` opens zero files whose name matches `*train*` or `*val*`. Verified by a grep-based static check in CI (no `train` or `val` literal in path constants).
+- **SC-010**: The LLM zero-shot baseline submits at most one API call per golden-set row (no retries beyond a single 429 backoff). Cost is bounded by `len(golden_set) * 1 call`.
 
 ---
 
@@ -134,3 +181,8 @@ The model server exposes `POST /predict-lead-score`, which accepts a visitor mes
 - `tenant_id` is passed to the model server for future per-tenant model support, but in Week 8 a single shared model serves all tenants.
 - The model server is called synchronously by the RouterService with an HTTP client that has timeout and retry configured.
 - Intent classes are fixed at 5: `spam`, `faq_support`, `sales_contact`, `human_request`, `ambiguous`. Changes require a retraining cycle.
+- The committed trained artifacts (`best_intent_classifier.joblib`, `intent_classifier_nn.onnx`) are over a richer label space (151 classes, sourced from a CLINC-style intent dataset — see `model_card_ml.json` / `model_card_nn.json`). The mapping from the raw 151-class output to the 5 routing intents lives in `model_server/artifacts/label_map.json` and is committed alongside the artifacts. Both layers (raw classifier label + routing intent) are returned in the model card; only the routing intent appears in `PredictResponse.label`.
+- The `model_server/artifacts/data/` directory contains test-split embeddings (`X_test_emb.npy`, 1200×1024 float64) and integer labels (`y_test.npy`). The raw test text is committed as `model_server/artifacts/data/text_test.json` (or `.txt`), enabling the LLM zero-shot baseline. If the text file is missing, the LLM baseline records `score=null` (User Story 5, Acceptance Scenario 4) instead of failing the run.
+- Each row in `golden_set.json` is JSON-serialisable: integer index, integer label, optional string text, and a list of 1024 floats for the embedding. The file size is bounded (≈ 100 rows × ~16 KB ≈ ~1.6 MB) — committing it is acceptable.
+- The eval script uses the same hosted LLM API the agent uses for tool calls (env: `LLM_PROVIDER`, `LLM_MODEL`). API credentials are passed via env var at CI run time; they are NOT stored in the repo.
+- The CI threshold (`classifier.macro_f1_min`) currently sits at the Day-1 placeholder of `0.50` and MUST be tightened to `0.75` (FR-010) once the eval harness is wired and the first real numbers are recorded. Tightening is a separate, conscious commit — not part of this feature's mechanical work.
