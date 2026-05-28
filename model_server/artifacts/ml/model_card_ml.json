@@ -1,0 +1,9 @@
+{
+    "task_name": "Intent Classification",
+    "model_type": "KNN",
+    "metrics": {
+        "macro_f1": 0.9723362356936527,
+        "accuracy": 0.9775
+    },
+    "artifact_sha256": "ad89420f6034ddd1a7206bd204c45e848368b77a9a74ca6334427dd17106d0b9"
+}
