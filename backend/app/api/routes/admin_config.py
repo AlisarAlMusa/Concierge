@@ -7,9 +7,13 @@ tenant_manager → 403.  member → 403.  unauthenticated → 401.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.session import get_db_session
 from app.dependencies import require_tenant_admin
 from app.models.user import User
+from app.schemas.tenant import OperationUsage, TenantUsageSummary
+from app.services import cost_service
 
 router = APIRouter(tags=["admin_config"])
 
@@ -32,3 +36,42 @@ async def get_tenant_config(
     RLS context is set by require_tenant_admin before this handler runs.
     """
     return {"tenant_id": str(current_user.tenant_id), "config": {}}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GET /tenant/usage-summary  (Spec 013 FR-005)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/usage-summary",
+    response_model=TenantUsageSummary,
+    summary="Get cost usage summary for the calling tenant (tenant_admin only)",
+)
+async def get_tenant_usage_summary(
+    current_user: User = Depends(require_tenant_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> TenantUsageSummary:
+    """Return aggregate cost metrics for the calling tenant.
+
+    tenant_id is derived from the authenticated user's JWT — never from the
+    request body (CLAUDE.md non-negotiable rule 5).
+
+    The session shared with require_tenant_admin already has app.tenant_id RLS
+    context set, so the DB-level policy provides a second enforcement layer on
+    top of the explicit tenant_id filter inside cost_service.get_tenant_usage_summary.
+
+    Returns numeric aggregates only — no conversation content, lead records, or
+    CMS body text (Spec 013 SC-005).
+    """
+    summary = await cost_service.get_tenant_usage_summary(session, current_user.tenant_id)
+    return TenantUsageSummary(
+        tenant_id=summary["tenant_id"],
+        total_input_tokens=summary["total_input_tokens"],
+        total_output_tokens=summary["total_output_tokens"],
+        total_cost_usd=summary["total_cost_usd"],
+        llm=OperationUsage(**summary["llm"]),
+        embedding=OperationUsage(**summary["embedding"]),
+        classifier=OperationUsage(**summary["classifier"]),
+        rerank=OperationUsage(**summary["rerank"]),
+    )

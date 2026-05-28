@@ -25,13 +25,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from functools import lru_cache
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 import httpx
 import redis.asyncio as aioredis
 import structlog
 from fastapi import Depends, Header, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -58,6 +58,7 @@ from app.services.lead_service import LeadService
 from app.services.llm_client import GroqLLMClient
 from app.services.memory_service import MemoryService
 from app.services.rag_service import RagService
+from app.services.rate_limit_service import RateLimitService
 from app.services.router_service import ClassifierClient, RouterService
 from app.services.tools import ToolRegistry, build_registry
 from app.services.widget_service import WidgetService
@@ -72,8 +73,6 @@ from app.services.workflows import (
     SalesWorkflow,
 )
 
-from sqlalchemy import select
-
 log = structlog.get_logger(__name__)
 
 
@@ -86,6 +85,21 @@ log = structlog.get_logger(__name__)
 async def get_redis(request: Request) -> aioredis.Redis:
     """Return the process-singleton Redis client attached by the lifespan."""
     return request.app.state.redis
+
+
+def get_rate_limit_service(
+    redis: aioredis.Redis = Depends(get_redis),
+    settings: Settings = Depends(get_settings),
+) -> RateLimitService:
+    """Per-request RateLimitService — stateless beyond Redis + config."""
+    return RateLimitService(
+        redis=redis,
+        tenant_limit=settings.CHAT_RATE_LIMIT_PER_TENANT,
+        widget_limit=settings.CHAT_RATE_LIMIT_PER_WIDGET,
+        window_seconds=settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
+        session_lead_limit=settings.LEAD_CAPTURE_LIMIT_PER_SESSION,
+        session_lead_window_seconds=settings.LEAD_CAPTURE_WINDOW_HOURS * 3600,
+    )
 
 
 async def get_service_client(request: Request) -> httpx.AsyncClient:
@@ -365,7 +379,8 @@ async def get_widget_claims(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=401,
-            detail={"detail": "Missing bearer token", "code": "auth_required"},
+            detail="Missing bearer token",
+            headers={"X-Error-Code": "auth_required"},
         )
     token = authorization.split(" ", 1)[1].strip()
 
@@ -373,7 +388,9 @@ async def get_widget_claims(
         return token_service.verify(token)
     except WidgetTokenError as exc:
         raise HTTPException(
-            status_code=401, detail={"detail": exc.reason, "code": exc.code}
+            status_code=401,
+            detail=exc.reason,
+            headers={"X-Error-Code": exc.code},
         ) from exc
 
 
@@ -511,6 +528,46 @@ def get_cms_page_service(
     """Admin CMS ingestion. Page + chunks written under the same session
     so a failed embedding pass rolls the page row back with it."""
     return CmsPageService(session=session, rag_service=rag_service)
+
+
+def get_admin_conversation_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+) -> ConversationService:
+    """ConversationService scoped to an admin-tenant session.
+
+    Distinct from ``get_conversation_service`` (widget-auth path) so the
+    admin escalations route doesn't pull in the widget token dependency
+    chain. The underlying service is identical — only the session source
+    differs.
+    """
+    return ConversationService(session=session)
+
+
+def get_admin_lead_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+    settings: Settings = Depends(get_settings),
+) -> LeadService:
+    """LeadService bound to the admin RLS session for ``/leads`` admin routes.
+
+    Same business logic as ``get_lead_service`` (widget path); only the
+    session source differs. The route layer is the one that gates on
+    ``X-Service-Token`` + ``X-Tenant-Id``.
+    """
+    return LeadService(session=session, settings=settings)
+
+
+def get_admin_escalation_service(
+    session: AsyncSession = Depends(get_admin_rls_session),
+    conversations: ConversationService = Depends(get_admin_conversation_service),
+) -> EscalationService:
+    """EscalationService bound to the admin RLS session for ``/escalations`` routes.
+
+    The injected ``ConversationService`` is unused by ``list_escalations`` /
+    ``update_escalation`` — it's a constructor requirement because the same
+    service also exposes ``create`` (which does flip the conversation
+    status). Keeping one service type avoids duplicating the model.
+    """
+    return EscalationService(session=session, conversation_service=conversations)
 
 def get_widget_service(
     session: AsyncSession = Depends(get_plain_db_session),

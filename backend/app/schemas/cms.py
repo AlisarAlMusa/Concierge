@@ -58,3 +58,32 @@ class CmsPageList(BaseModel):
 
     items: list[CmsPageRead]
     total: int
+
+
+class CmsPageUpdate(BaseModel):
+    """``PATCH /cms/pages/{page_id}`` request body — every field optional.
+
+    All four fields are optional so the client can submit any combination
+    (e.g. just ``status`` to unpublish, just ``body`` to trigger reindex).
+    The service applies the reindex policy: body change on a published
+    page reindexes, flipping to ``draft`` drops chunks. See
+    ``CmsPageService.update_page`` for the full state machine.
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    slug: str | None = Field(default=None, min_length=1, max_length=255)
+    body: str | None = Field(default=None, min_length=1)
+    status: CmsPageStatus | None = None
+
+
+class CmsReindexAllResult(BaseModel):
+    """``POST /cms/reindex-all`` response.
+
+    Synchronous bulk reindex result for the seed/demo corpus. Larger
+    corpora (spec edge case: 100+ pages) would queue a background job
+    and return 202 — implementing that queue lives with the worker
+    service and is intentionally out of scope here.
+    """
+
+    pages_reindexed: int = Field(..., ge=0)
+    chunks_written: int = Field(..., ge=0)
