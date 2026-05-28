@@ -1,9 +1,13 @@
+import re
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
 from app.models.tenant import TenantStatus
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
 
 class TenantCreate(BaseModel):
@@ -13,9 +17,13 @@ class TenantCreate(BaseModel):
     @field_validator("slug")
     @classmethod
     def slug_format(cls, v: str) -> str:
-        if not v.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("slug must be alphanumeric with hyphens/underscores only")
-        return v.lower()
+        v = v.lower()
+        if not _SLUG_RE.match(v):
+            raise ValueError(
+                "slug must be lowercase alphanumeric with hyphens only, "
+                "start and end with alphanumeric, minimum 2 characters"
+            )
+        return v
 
 
 class TenantRead(BaseModel):
@@ -32,3 +40,10 @@ class TenantRead(BaseModel):
 class TenantUpdate(BaseModel):
     name: str | None = None
     status: TenantStatus | None = None
+
+
+class TenantUsageSummary(BaseModel):
+    tenant_id: UUID
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cost_usd: Decimal

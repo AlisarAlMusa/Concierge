@@ -6,7 +6,7 @@
 
 **Created**: 2026-05-27
 
-**Status**: Draft
+**Status**: Implemented (router + orchestrator + workflows; classifier adapter pending Person C)
 
 ---
 
@@ -104,22 +104,24 @@ A message that is ambiguous or multi-step ("I'm interested but also have a quest
 
 ### Functional Requirements
 
-- **FR-001**: The RouterService MUST call the model server's `/predict-intent` endpoint for every inbound message.
+- **FR-001**: The RouterService MUST call the classifier client (`ClassifierClient.classify`) for every inbound message. In production this client is the HTTP adapter that targets the model server's `/predict-intent` endpoint.
 - **FR-002**: The RouterService MUST route based on the returned label and a configurable confidence threshold.
-- **FR-003**: `spam` at confidence ≥ threshold MUST be dropped (no LLM, no lead, no agent). A refusal reply is returned.
-- **FR-004**: `faq_support` at confidence ≥ threshold MUST invoke the RagService and return the answer directly.
-- **FR-005**: `sales_contact` at confidence ≥ threshold MUST invoke the LeadService to write a lead and return a confirmation reply.
-- **FR-006**: `human_request` at confidence ≥ threshold MUST invoke the EscalationService and return a handoff reply.
-- **FR-007**: `ambiguous` label OR any label with confidence below threshold MUST invoke the AgentService.
-- **FR-008**: The model server call MUST have a timeout and retry; on failure, route to agent (safe degradation).
-- **FR-009**: The routing decision and the classifier label + confidence MUST be logged as a structured event (for eval and cost analysis).
+- **FR-003**: `spam` at confidence ≥ threshold MUST be returned as `RouteDecision(path="drop")`. The dispatcher (ChatOrchestrator) returns a canned refusal and writes no memory / lead / escalation.
+- **FR-004**: `faq` at confidence ≥ threshold MUST be returned as `RouteDecision(path="faq")`. The dispatcher routes to `FaqWorkflow` (one-shot RAG-grounded LLM call, no tools).
+- **FR-005**: `sales` at confidence ≥ threshold MUST be returned as `RouteDecision(path="sales")`. The dispatcher routes to `SalesWorkflow` (sales-leaning persona, same single-call shape as FAQ).
+- **FR-006**: `human` at confidence ≥ threshold MUST be returned as `RouteDecision(path="human")`. The dispatcher routes to `HumanWorkflow` which calls `EscalationService.create` and returns the canned handoff reply.
+- **FR-007**: `ambiguous` label OR any label with confidence below threshold MUST be returned as `RouteDecision(path="agent")`. The dispatcher routes to `AgentService` (the bounded tool-calling loop).
+- **FR-008**: The classifier client MUST be the only place that owns timeout/retry. When it raises `ExternalServiceError`, RouterService MUST fail open with `RouteDecision(path="agent", reason="classifier_unavailable")`.
+- **FR-009**: The routing decision (`path`, `reason`, `classifier_label`, `confidence`) MUST be emitted as a structured log event (`router.decision` or `router.classifier_unavailable`). The raw user message MUST NOT appear in the log.
 - **FR-010**: The RouterService MUST operate entirely within the tenant context set by the request lifecycle — it MUST NOT read `tenant_id` from message content.
-- **FR-011**: The confidence threshold MUST be configurable (default 0.75) without a code change.
+- **FR-011**: The confidence threshold MUST be configurable via `Settings.ROUTER_CONFIDENCE_THRESHOLD` (default `0.75`, per `docs/SPEC.md §4`) without a code change.
+- **FR-012**: RouterService MUST be a pure decision function. It MUST NOT call `RagService`, `LeadService`, `EscalationService`, `AgentService`, Postgres, or Redis. Dispatching is the sole responsibility of `ChatOrchestrator`.
 
 ### Key Entities
 
-- **Routing Decision**: label, confidence, routing_path (`spam_drop` | `rag_answer` | `lead_capture` | `escalation` | `agent`), classifier latency_ms.
-- **Confidence Threshold**: Configurable float (default 0.75); determines when a label is "certain enough" for the deterministic path.
+- **Routing Decision** (`RouteDecision`): `path` (`drop` | `faq` | `sales` | `human` | `agent`), `reason` (one of `faq` | `sales` | `human` | `spam` | `ambiguous` | `low_confidence` | `unknown_label` | `classifier_unavailable`), `classifier_label` (raw string from classifier, preserved for observability), `confidence` (float, `None` only on `classifier_unavailable`).
+- **Confidence Threshold**: Configurable float (default `0.75`); determines when a label is "certain enough" for the deterministic path.
+- **Closed Label Set**: `{faq, sales, human, spam, ambiguous}`. Any label outside this set → `path="agent"`, `reason="unknown_label"`.
 
 ---
 
@@ -137,8 +139,202 @@ A message that is ambiguous or multi-step ("I'm interested but also have a quest
 
 ## Assumptions
 
-- The confidence threshold default of 0.75 is a starting point; the team validates it against the golden set during eval.
+- The confidence threshold default of `0.75` is a starting point; the team validates it against the golden set during eval.
 - The router does not persist its routing decision as a DB row in Week 8; it is logged for observability but not stored.
-- The router is implemented as a service class (`RouterService`) called by the chat endpoint — not as a separate microservice.
-- RAG answer is generated by calling the LLM with the retrieved chunks as context; the RouterService delegates this to `RagService` which calls `LLMClient`.
-- `sales_contact` lead capture by the router uses a simplified extraction (intent + any visible email/name from the message); full contact extraction is the agent's job for ambiguous cases.
+- The router is implemented as a service class (`RouterService`) called by `ChatOrchestrator` — not as a separate microservice.
+- The FAQ workflow produces its grounded reply by issuing one `LLMClient.tool_complete` call with `tools=[]` and the retrieved chunks injected into the user message. The workflow is single-shot by design.
+- The Sales workflow mirrors the FAQ workflow's single-shot shape with a sales-leaning persona. It does not call `LeadService.capture` directly; lead capture remains the agent's job for ambiguous turns. (Direct workflow capture is a deferred Phase 2 option once the assignment's "single deterministic step" requirement is met.)
+- The Human workflow wraps `EscalationService.create` only — no LLM, no RAG.
+
+---
+
+## Implementation Addendum (Owner B — frozen contracts)
+
+> Merged from the retired `specs/{router-service,chat-orchestrator,workflow-services}/spec.md` files (May 2026). This section is the source of truth for the implemented surfaces; the FRs above are the assignment-level requirements those surfaces satisfy.
+
+### A. RouterService (`backend/app/services/router_service.py`)
+
+Pure decision function. No DB, no Redis, no HTTP, no dispatch.
+
+```python
+class ClassifierResponse(BaseModel):
+    label: str
+    confidence: float          # 0.0 .. 1.0
+
+class ClassifierClient(Protocol):
+    async def classify(self, *, text: str) -> ClassifierResponse: ...
+
+RoutePath = Literal["faq", "sales", "human", "agent", "drop"]
+RouteReason = Literal[
+    "faq", "sales", "human", "spam", "ambiguous",
+    "low_confidence", "unknown_label", "classifier_unavailable",
+]
+
+class RouteDecision(BaseModel):
+    path: RoutePath
+    reason: RouteReason
+    confidence: float | None = None
+    classifier_label: str | None = None
+
+KNOWN_LABELS = frozenset({"faq", "sales", "human", "spam", "ambiguous"})
+
+class RouterService:
+    def __init__(self, *, classifier_client: ClassifierClient,
+                 confidence_threshold: float) -> None: ...
+    async def decide(self, *, text: str, tenant_id: UUID,
+                     conversation_id: UUID) -> RouteDecision: ...
+```
+
+#### Routing policy (frozen)
+
+| Condition | `path` | `reason` |
+|---|---|---|
+| Classifier raises `ExternalServiceError` | `agent` | `classifier_unavailable` |
+| `confidence < threshold` (any label) | `agent` | `low_confidence` |
+| Label not in `KNOWN_LABELS` | `agent` | `unknown_label` |
+| Confident `"spam"` | `drop` | `spam` |
+| Confident `"ambiguous"` | `agent` | `ambiguous` |
+| Confident `"faq"` | `faq` | `faq` |
+| Confident `"sales"` | `sales` | `sales` |
+| Confident `"human"` | `human` | `human` |
+
+#### Invariants
+
+1. Confidence guard runs **before** label dispatch — a low-confidence `"spam"` label routes to `agent`, never `drop`.
+2. Threshold is inclusive on the upper side: `confidence >= threshold` passes.
+3. Constructor rejects thresholds outside `[0.0, 1.0]` with `ValueError`.
+4. Only `ExternalServiceError` is treated as recoverable; other exceptions propagate.
+5. `confidence` and `classifier_label` are `None` only on the `classifier_unavailable` path.
+
+### B. ChatOrchestrator (`backend/app/services/chat_orchestrator.py`)
+
+The single turn coordinator. Owns: guardrail sequencing, router dispatch, memory writes, SQL message persistence, and the dispatch fanout to workflows / agent.
+
+```python
+class ChatOrchestrator:
+    def __init__(
+        self, *,
+        router_service: RouterService,
+        agent_service: AgentService,
+        memory_service: MemoryService,
+        escalation_service: EscalationService,
+        conversation_service: ConversationService,
+        faq_workflow: FaqWorkflow | None = None,
+        sales_workflow: SalesWorkflow | None = None,
+        human_workflow: HumanWorkflow | None = None,
+        guardrail_client: GuardrailClient | None = None,  # passthrough by default
+    ) -> None: ...
+
+    async def handle_turn(
+        self, *,
+        tenant_id: UUID, user_message: str,
+        conversation_id: UUID | None = None,
+        visitor_session_id: UUID | None = None,
+        widget_id: UUID | None = None,
+        tenant_persona: str | None = None,
+    ) -> ChatTurn: ...
+
+class ChatTurn(BaseModel):
+    reply: str
+    conversation_id: UUID
+    route: RouteDecision
+    sources: list[UUID] = []
+    used_refusal_fallback: bool = False
+    agent_iterations: int = 0
+```
+
+#### Dispatch table (frozen)
+
+| `RouteDecision.path` | Handler | Memory write | SQL message write |
+|---|---|---|---|
+| `drop` | canned reply | **skipped** | **skipped** |
+| `human` | `HumanWorkflow.run` (else inline `EscalationService.create`) | written | written |
+| `faq` | `FaqWorkflow.run` (else `AgentService.run`) | written | written |
+| `sales` | `SalesWorkflow.run` (else `AgentService.run`) | written | written |
+| `agent` | `AgentService.run` | written | written |
+
+#### Invariants
+
+1. One router call per turn. No re-routing inside the agent or after dispatch.
+2. Memory is written by the orchestrator only. `AgentService` reads memory; the workflows neither read nor write.
+3. Memory and SQL persistence are skipped on `drop` (spam must not pollute history).
+4. `conversation_id` is minted via `ConversationService.get_or_create` so message inserts have a valid FK from turn one.
+5. `input_check.redacted_text` flows into router / agent / memory — never the raw user message.
+6. `output_check.redacted_text` flows into memory + the response.
+7. `EscalationService` failures don't crash the turn — a canned fallback reply is returned and logged.
+8. The orchestrator never silently catches `ExternalServiceError` from `AgentService` — that propagates so the global handler can return 503.
+
+### C. Workflow services (`backend/app/services/workflows/`)
+
+Every workflow exposes the same async surface:
+
+```python
+class WorkflowTurnResult(BaseModel):
+    reply: str
+    sources: list[UUID] = []
+    used_refusal_fallback: bool = False
+
+class WorkflowService(Protocol):
+    async def run(
+        self, *,
+        tenant_id: UUID, conversation_id: UUID,
+        visitor_session_id: UUID | None,
+        user_message: str, tenant_persona: str | None,
+        route_decision: RouteDecision,
+    ) -> WorkflowTurnResult: ...
+```
+
+`FaqWorkflow` (`workflows/faq.py`): `rag_service.search` → if no chunks return refusal → otherwise build one-shot message list (`system_faq.md` + `faq_user.md`) → `llm_client.tool_complete(tools=[], …)` → return reply + deduped sources.
+
+`SalesWorkflow` (`workflows/sales.py`): identical to FAQ but with `system_sales.md`.
+
+`HumanWorkflow` (`workflows/human.py`): pure `EscalationService.create` wrapper. No LLM, no RAG. On exception → canned failure reply, `used_refusal_fallback=True`.
+
+#### Invariants
+
+1. **No tools.** Workflows call `tool_complete(messages, tools=[], …)`. `ToolRegistry` is not constructed for workflow paths.
+2. One LLM call per turn (FAQ / Sales) or zero (Human).
+3. Workflows write neither memory nor SQL — the orchestrator keeps owning persistence.
+4. `RouterService` stays pure: workflows are constructed by DI and dispatched by `ChatOrchestrator`; the router never knows about them.
+5. Empty LLM content → refusal fallback (`prompts/refusal.md`), `used_refusal_fallback=True`.
+
+### D. Settings (frozen)
+
+| Setting | Default | Source |
+|---|---|---|
+| `ROUTER_CONFIDENCE_THRESHOLD` | `0.75` | `Settings` (per `docs/SPEC.md §4`) |
+| `CLASSIFIER_ENABLED` | `False` (Week 8 default; flips to `True` once model_server runs) | `Settings` |
+| `MEMORY_TTL_SECONDS` | `86400` | `Settings` → `MemoryService` |
+| `MEMORY_MAX_ENTRIES` | `40` | `Settings` → `MemoryService` |
+
+The orchestrator itself takes no settings — every knob is consumed by the collaborator that owns it.
+
+### E. Test coverage (frozen counts)
+
+| Surface | File | Scenarios |
+|---|---|---|
+| `RouterService` | `backend/tests/test_router_service.py` | 10 |
+| `ChatOrchestrator` | `backend/tests/test_chat_orchestrator.py` | 13 (11 original + 2 workflow dispatch) |
+| `FaqWorkflow`/`SalesWorkflow`/`HumanWorkflow` | `backend/tests/test_workflows.py` | 10 |
+| Classifier DI | `backend/tests/test_classifier_di.py` | 2 |
+
+### F. Implementation status
+
+| Component | Status |
+|---|---|
+| `RouterService` + closed-label policy | Implemented |
+| `ClassifierResponse` / `ClassifierClient` Protocol | Implemented |
+| `UnavailableClassifierClient` stub | Implemented |
+| `HttpClassifierClient` (env-conditional via `Settings.CLASSIFIER_ENABLED`) | Implemented |
+| `ChatOrchestrator.handle_turn` | Implemented |
+| `FaqWorkflow` / `SalesWorkflow` / `HumanWorkflow` | Implemented |
+| Dispatch table (drop/faq/sales/human/agent) | Implemented |
+| DI providers (`get_router_service`, `get_chat_orchestrator`, `get_*_workflow`) | Implemented |
+| Real guardrails sidecar wiring (`HttpGuardrailClient`) | Pending — Person C |
+| Real `HttpClassifierClient` enabled in compose | Pending — model_server must be up |
+
+### G. Future integration points
+
+- **Guardrails sidecar (Person C)**: build a `HttpGuardrailClient` mirroring `HttpClassifierClient` and bind it in `get_chat_orchestrator`. `PassthroughGuardrailClient` remains the test + local fallback.
+- **Classifier (Person C)**: flip `Settings.CLASSIFIER_ENABLED=True` once the model_server is up; DI already returns `HttpClassifierClient` in that case. The router fails open if it's not.
+- **Direct lead capture in `SalesWorkflow`**: deferred Phase 2 option. Requires extracting contact info from the user message without breaking the single-step deterministic contract.

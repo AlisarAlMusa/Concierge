@@ -71,9 +71,7 @@ def test_non_local_mode_fetches_from_vault(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("SERVICE_AUTH_SECRET", "")
     expected = "vault-issued-token-" + "x" * 40
 
-    with patch(
-        "app.core.config.fetch_service_token", return_value=expected
-    ) as fetch:
+    with patch("app.core.config.fetch_service_token", return_value=expected) as fetch:
         settings = backend_config.get_settings()
     fetch.assert_called_once()
     assert settings.SERVICE_AUTH_SECRET == expected

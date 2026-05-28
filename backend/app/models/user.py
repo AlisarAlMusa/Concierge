@@ -1,8 +1,9 @@
 import enum
+from datetime import datetime
 from uuid import UUID
 
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID
-from sqlalchemy import Enum, ForeignKey
+from sqlalchemy import DateTime, Enum, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -27,4 +28,9 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )

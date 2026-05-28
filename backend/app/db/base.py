@@ -1,24 +1,35 @@
+"""SQLAlchemy declarative base.
+
+Model classes should import Base from here, NOT from this module itself.
+All model registrations for Alembic autogenerate are done in migrations/env.py.
+"""
+
 from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
     pass
+<<<<<<< HEAD
+=======
 
 
-# Import all models here so Alembic autogenerate picks them up.
-# Person A's models:
-from app.models.audit_log import AuditLog  # noqa: F401, E402
-from app.models.cost_event import CostEvent  # noqa: F401, E402
-from app.models.tenant import Tenant  # noqa: F401, E402
-from app.models.user import User  # noqa: F401, E402
-
-# Person B's models (imported after B adds their implementation):
-# from app.models.cms import CmsPage  # noqa: F401, E402
-# from app.models.chunk import ContentChunk  # noqa: F401, E402
-# from app.models.widget import Widget  # noqa: F401, E402
-# from app.models.conversation import Conversation, Message  # noqa: F401, E402
-# from app.models.lead import Lead  # noqa: F401, E402
-# from app.models.escalation import Escalation  # noqa: F401, E402
+# Register every model with ``Base.metadata`` so Alembic autogenerate sees
+# them. The ``import app.models.X`` form (rather than ``from … import X``)
+# is intentional — it tolerates being re-entered mid-way through another
+# model's import without raising ``ImportError`` on a partially-defined
+# class. See ``models/user.py`` → ``db/base.py`` → ``models/user.py``
+# cycle that ``app.dependencies`` triggers on import.
+import app.models.audit_log  # noqa: F401, E402
+import app.models.chunk  # noqa: F401, E402
+import app.models.cms  # noqa: F401, E402
+import app.models.conversation  # noqa: F401, E402
+import app.models.cost_event  # noqa: F401, E402
+import app.models.escalation  # noqa: F401, E402
+import app.models.lead  # noqa: F401, E402
+import app.models.tenant  # noqa: F401, E402
+import app.models.user  # noqa: F401, E402
+import app.models.widget  # noqa: F401, E402
 
 # Person C's models:
-# from app.models.guardrail_config import GuardrailConfig  # noqa: F401, E402
+# import app.models.guardrail_config  # noqa: F401, E402
+>>>>>>> 8b5ed4f (Implement CMS ingestion and RAG indexing flow)
