@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-import logging
-=======
 """Application settings.
 
 Owner B PR 3 adds the keys the chat/agent/widget paths consume at runtime —
@@ -10,7 +7,7 @@ short-lived widget session JWT (Spec 011 FR-012). Defaults match the frozen
 specs so a fresh ``.env`` boots a usable local stack.
 """
 
->>>>>>> 8b5ed4f (Implement CMS ingestion and RAG indexing flow)
+import logging
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict

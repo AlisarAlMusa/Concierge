@@ -248,3 +248,65 @@ Each tenant sees only its own pages — `WHERE tenant_id = $1` at the SQL
 layer plus the `cms_pages_tenant_isolation` RLS policy enforces this on
 the read path. The write path enforces it on insert via the same RLS
 `WITH CHECK` clause.
+
+### Edit, unpublish, delete, and reindex (Spec 005 FR-004 → FR-008)
+
+The CMS surface exposes the full edit lifecycle. All routes share the
+same `X-Service-Token` + `X-Tenant-Id` gate as `POST /cms/pages`. The
+reindex policy is enforced at the service layer: a body change on a
+published page reindexes through `RagService.index_page`; flipping a
+page to `draft` purges its chunks; reindex on a draft is a no-op
+(FR-009).
+
+```bash
+PAGE_ID=<id-from-POST-response>
+
+# Partial update — change only what you send. Body change on a published
+# page triggers a reindex, returns chunks_written.
+curl -s -X PATCH http://localhost:8000/cms/pages/$PAGE_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"body": "Updated copy here."}'
+
+# Unpublish — flips status to draft AND drops chunks so retrieval can
+# never surface draft content (FR-009).
+curl -s -X PATCH http://localhost:8000/cms/pages/$PAGE_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "draft"}'
+
+# Publish — sets status to published, reindexes through RagService.
+curl -s -X POST http://localhost:8000/cms/pages/$PAGE_ID/publish \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID"
+
+# Reindex a single published page in place. RagService.index_page is
+# itself delete-then-insert, so chunks are never duplicated. Draft
+# pages return chunks_written=0 without touching the vector store.
+curl -s -X POST http://localhost:8000/cms/pages/$PAGE_ID/reindex \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID"
+
+# Delete — removes the page AND its chunks (tenant-scoped). 204 on
+# success, 404 if the page does not exist for this tenant.
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -X DELETE http://localhost:8000/cms/pages/$PAGE_ID \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID"
+# → 204
+
+# Bulk reindex — re-embed every published page for the caller's tenant.
+# Synchronous; fine for the seed corpus (SC-005 caps a tenant at 500
+# pages). Returns counts so admin tooling can verify the operation.
+curl -s -X POST http://localhost:8000/cms/reindex-all \
+  -H "X-Service-Token: change-me-local-dev-only" \
+  -H "X-Tenant-Id: $TENANT_ID"
+# → {"pages_reindexed": 6, "chunks_written": 14}
+```
+
+Slug changes on PATCH are validated server-side: a slug already taken
+by a *different* page for the same tenant returns `409 conflict` rather
+than silently upserting (that path is only available through
+`POST /cms/pages`).
