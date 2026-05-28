@@ -7,7 +7,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.cost_event import CostEvent
+from app.models.cost_event import CostEvent, CostOperation
 from app.models.tenant import Tenant, TenantStatus
 
 log = structlog.get_logger(__name__)
@@ -49,19 +49,64 @@ async def update_tenant_status(
 
 
 async def get_usage_summary(session: AsyncSession, tenant_id: UUID) -> dict:
-    """Aggregate cost_events for a tenant. Returns zeros if no events exist."""
+    """Return per-operation and total aggregate cost metrics for a tenant.
+
+    Returns zeros for all fields if the tenant has no cost events. The returned
+    dict matches the shape expected by TenantUsageSummary (Spec 013 FR-005/006).
+    Contains only numeric aggregates — no content fields (SC-005).
+    """
     result = await session.execute(
         select(
-            func.coalesce(func.sum(CostEvent.input_tokens), 0).label("total_input_tokens"),
-            func.coalesce(func.sum(CostEvent.output_tokens), 0).label("total_output_tokens"),
-            func.coalesce(func.sum(CostEvent.estimated_cost_usd), Decimal("0")).label(
-                "total_cost_usd"
-            ),
-        ).where(CostEvent.tenant_id == tenant_id)
+            CostEvent.operation,
+            func.coalesce(func.sum(CostEvent.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(CostEvent.output_tokens), 0).label("output_tokens"),
+            func.coalesce(
+                func.sum(CostEvent.estimated_cost_usd), Decimal("0")
+            ).label("cost_usd"),
+        )
+        .where(CostEvent.tenant_id == tenant_id)
+        .group_by(CostEvent.operation)
     )
-    row = result.one()
+
+    by_op: dict[str, dict] = {}
+    for row in result:
+        op_key = row.operation.value if hasattr(row.operation, "value") else str(row.operation)
+        by_op[op_key] = {
+            "input_tokens": int(row.input_tokens),
+            "output_tokens": int(row.output_tokens),
+            "cost_usd": Decimal(str(row.cost_usd)),
+        }
+
+    def _zero() -> dict:
+        return {"input_tokens": 0, "output_tokens": 0, "cost_usd": Decimal("0")}
+
+    llm = by_op.get(CostOperation.llm.value, _zero())
+    embedding = by_op.get(CostOperation.embedding.value, _zero())
+    classifier = by_op.get(CostOperation.classifier.value, _zero())
+    rerank = by_op.get(CostOperation.rerank.value, _zero())
+
+    total_input = (
+        llm["input_tokens"]
+        + embedding["input_tokens"]
+        + classifier["input_tokens"]
+        + rerank["input_tokens"]
+    )
+    total_output = (
+        llm["output_tokens"]
+        + embedding["output_tokens"]
+        + classifier["output_tokens"]
+        + rerank["output_tokens"]
+    )
+    total_cost = (
+        llm["cost_usd"] + embedding["cost_usd"] + classifier["cost_usd"] + rerank["cost_usd"]
+    )
+
     return {
-        "total_input_tokens": int(row.total_input_tokens),
-        "total_output_tokens": int(row.total_output_tokens),
-        "total_cost_usd": Decimal(str(row.total_cost_usd)),
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_cost_usd": total_cost,
+        "llm": llm,
+        "embedding": embedding,
+        "classifier": classifier,
+        "rerank": rerank,
     }

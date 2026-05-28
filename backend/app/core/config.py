@@ -1,10 +1,9 @@
 """Application settings.
 
-Owner B PR 3 adds the keys the chat/agent/widget paths consume at runtime —
-``GROQ_API_KEY`` / ``COHERE_API_KEY`` (provider auth), the memory + agent + router
-caps the DI layer wires into services, and ``WIDGET_TOKEN_TTL_SECONDS`` for the
-short-lived widget session JWT (Spec 011 FR-012). Defaults match the frozen
-specs so a fresh ``.env`` boots a usable local stack.
+Owner A PR 3 adds the keys the cost-tracking and rate-limiting paths consume at
+runtime — per-tenant and per-widget chat rate limits, per-session lead-capture
+limits, and a static cost-per-token pricing table for Groq and Cohere (Spec 013).
+Defaults match the frozen specs so a fresh ``.env`` boots a usable local stack.
 """
 
 import logging
@@ -82,9 +81,21 @@ class Settings(BaseSettings):
     # refresh.
     WIDGET_TOKEN_TTL_SECONDS: int = 900
 
-    # capture_lead per-session rate limit (Spec 012 FR-003).
+    # capture_lead per-session rate limit (Spec 012 FR-003 / Spec 013 FR-009).
     LEAD_CAPTURE_LIMIT_PER_SESSION: int = 5
     LEAD_CAPTURE_WINDOW_HOURS: int = 1
+
+    # Chat rate limits (Spec 013 FR-007, FR-008). Fixed-window counters in Redis.
+    # CHAT_RATE_LIMIT_WINDOW_SECONDS is the shared window for both scopes.
+    CHAT_RATE_LIMIT_PER_TENANT: int = 100   # requests/window/tenant
+    CHAT_RATE_LIMIT_PER_WIDGET: int = 60    # requests/window/widget
+    CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+
+    # Static cost-per-token pricing table, USD (Spec 013 assumption).
+    # Self-hosted services (classifier, rerank) are priced at zero.
+    COST_GROQ_INPUT_PER_TOKEN: float = 0.0000003    # ~$0.30/1M
+    COST_GROQ_OUTPUT_PER_TOKEN: float = 0.0000005   # ~$0.50/1M
+    COST_COHERE_INPUT_PER_TOKEN: float = 0.0000002  # ~$0.20/1M (embed only)
 
 
 @lru_cache
