@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     admin_config,
+    audit_logs,
     auth,
     chat,
     cms,
@@ -21,6 +22,7 @@ api_router.include_router(health.router)
 # platform error contract.
 api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(tenants.router, prefix="/platform/tenants")
+api_router.include_router(audit_logs.router, prefix="/platform")
 api_router.include_router(admin_config.router, prefix="/tenant")
 api_router.include_router(cms.router, prefix="/cms")
 api_router.include_router(widgets.router, prefix="/widgets")

@@ -83,9 +83,7 @@ def register_error_handlers(app: FastAPI) -> None:  # noqa: C901
         )
 
     @app.exception_handler(TenantSuspendedError)
-    async def tenant_suspended_handler(
-        request: Request, exc: TenantSuspendedError
-    ) -> JSONResponse:
+    async def tenant_suspended_handler(request: Request, exc: TenantSuspendedError) -> JSONResponse:
         return JSONResponse(
             status_code=403,
             content={"detail": str(exc), "code": "tenant_suspended"},
@@ -99,9 +97,7 @@ def register_error_handlers(app: FastAPI) -> None:  # noqa: C901
         )
 
     @app.exception_handler(ExternalServiceError)
-    async def external_service_handler(
-        request: Request, exc: ExternalServiceError
-    ) -> JSONResponse:
+    async def external_service_handler(request: Request, exc: ExternalServiceError) -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"detail": str(exc), "code": "upstream_error"},
@@ -119,9 +115,7 @@ def register_error_handlers(app: FastAPI) -> None:  # noqa: C901
         )
 
     @app.exception_handler(fuu_exc.UserNotExists)
-    async def user_not_exists_handler(
-        request: Request, exc: fuu_exc.UserNotExists
-    ) -> JSONResponse:
+    async def user_not_exists_handler(request: Request, exc: fuu_exc.UserNotExists) -> JSONResponse:
         return JSONResponse(
             status_code=401,
             content={"detail": "Authentication required", "code": "auth_required"},
@@ -129,9 +123,7 @@ def register_error_handlers(app: FastAPI) -> None:  # noqa: C901
         )
 
     @app.exception_handler(fuu_exc.UserInactive)
-    async def user_inactive_handler(
-        request: Request, exc: fuu_exc.UserInactive
-    ) -> JSONResponse:
+    async def user_inactive_handler(request: Request, exc: fuu_exc.UserInactive) -> JSONResponse:
         return JSONResponse(
             status_code=401,
             content={"detail": "Account is inactive", "code": "auth_required"},
