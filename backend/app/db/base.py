@@ -9,8 +9,6 @@ from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
     pass
-<<<<<<< HEAD
-=======
 
 
 # Register every model with ``Base.metadata`` so Alembic autogenerate sees
@@ -25,11 +23,8 @@ import app.models.cms  # noqa: F401, E402
 import app.models.conversation  # noqa: F401, E402
 import app.models.cost_event  # noqa: F401, E402
 import app.models.escalation  # noqa: F401, E402
+import app.models.guardrail_config  # noqa: F401, E402
 import app.models.lead  # noqa: F401, E402
 import app.models.tenant  # noqa: F401, E402
 import app.models.user  # noqa: F401, E402
 import app.models.widget  # noqa: F401, E402
-
-# Person C's models:
-# import app.models.guardrail_config  # noqa: F401, E402
->>>>>>> 8b5ed4f (Implement CMS ingestion and RAG indexing flow)

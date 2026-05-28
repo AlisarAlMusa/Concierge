@@ -5,6 +5,10 @@ Authentication: ``Authorization: Bearer <widget session token>``.
 from the verified JWT — never from the request body. See
 ``specs/widget-auth/spec.md``.
 
+Rate limiting (Spec 013 FR-007, FR-008): per-tenant and per-widget fixed-window
+counters are checked before the orchestrator runs. Fail-open if Redis is
+unreachable (Spec 013 edge case).
+
 Schema: ``app.schemas.chat`` is the public API contract; do not change those
 field names without updating ``docs/SPEC.md``.
 """
@@ -17,12 +21,14 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.dependencies import (
     get_chat_orchestrator,
+    get_rate_limit_service,
     get_tenant_id,
     get_visitor_session_id,
     get_widget_id,
 )
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.chat_orchestrator import ChatOrchestrator
+from app.services.rate_limit_service import RateLimitService
 
 router = APIRouter(tags=["chat"])
 
@@ -34,6 +40,7 @@ async def post_chat(
     widget_id: UUID = Depends(get_widget_id),
     visitor_session_id: UUID = Depends(get_visitor_session_id),
     orchestrator: ChatOrchestrator = Depends(get_chat_orchestrator),
+    rate_limiter: RateLimitService = Depends(get_rate_limit_service),
 ) -> ChatResponse:
     """Run one chat turn end to end.
 
@@ -41,9 +48,14 @@ async def post_chat(
 
     * 400 — empty message or malformed ``conversation_id``.
     * 401 — missing/invalid/expired widget session token.
+    * 429 — per-tenant or per-widget rate limit exceeded (Spec 013 FR-007/008).
     * 503 — upstream provider failure (LLM, embedding) surfaces via the
       global ``ExternalServiceError`` handler.
     """
+    # Rate limit checks run before any DB work. Fail-open on Redis failure.
+    await rate_limiter.check_tenant_chat_limit(tenant_id)
+    await rate_limiter.check_widget_chat_limit(widget_id)
+
     if not request.message or not request.message.strip():
         raise HTTPException(status_code=400, detail="message must be non-empty")
 

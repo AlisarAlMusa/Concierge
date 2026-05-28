@@ -162,7 +162,7 @@ def test_chat_with_invalid_token_returns_401(client: TestClient) -> None:
         "/chat", json={"message": "hi"}, headers={"Authorization": "Bearer not-a-jwt"}
     )
     assert response.status_code == 401
-    assert response.json()["detail"]["code"] in ("invalid_token", "malformed_token")
+    assert response.json()["code"] in ("invalid_token", "malformed_token")
 
 
 def test_chat_with_wrong_secret_token_returns_401(client: TestClient) -> None:

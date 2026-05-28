@@ -50,6 +50,10 @@ class LLMResponse(BaseModel):
 
     content: str | None = None
     tool_calls: list[LLMToolCall] = []
+    # Token usage extracted from the provider response (Spec 013 FR-001).
+    # Defaults to 0 so existing tests that don't set them keep working.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 # ----- Agent output shape ----------------------------------------------------
@@ -112,6 +116,9 @@ class AgentService:
                 tools=tools_spec,
                 max_tokens=self._max_output_tokens,
             )
+
+            # Fire-and-forget cost event for this LLM call (Spec 013 FR-001).
+            _fire_llm_cost_event(tenant_id, self._llm, response)
 
             # Natural exit: no tool calls → final answer.
             if not response.tool_calls:
@@ -271,3 +278,33 @@ def _dedupe(items: list[UUID]) -> list[UUID]:
             seen.add(item)
             out.append(item)
     return out
+
+
+def _fire_llm_cost_event(tenant_id: UUID, llm_client: Any, response: LLMResponse) -> None:
+    """Fire-and-forget cost event for one LLM call (Spec 013 FR-001).
+
+    Reads provider/model from the LLM client via duck-typed attribute access
+    so this helper works with any client that exposes ``_model``.
+    Failures are swallowed inside cost_service.record_event.
+    """
+    if response.input_tokens == 0 and response.output_tokens == 0:
+        return  # no usage data — skip rather than record a zero row
+
+    try:
+        from app.models.cost_event import CostOperation
+        from app.services import cost_service
+
+        model = getattr(llm_client, "_model", "unknown")
+        # Determine provider from the client class name (groq → "groq").
+        provider = type(llm_client).__name__.lower().replace("llmclient", "")
+
+        cost_service.record_event(
+            tenant_id=tenant_id,
+            provider=provider,
+            model=model,
+            operation=CostOperation.llm,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # cost recording must never surface to callers

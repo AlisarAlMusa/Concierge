@@ -1,10 +1,3 @@
-# TODO: Person B — implement Conversation and Message models
-# Conversation fields: id, tenant_id, widget_id, visitor_session_id, status, created_at, updated_at
-# Message fields: id, tenant_id, conversation_id, role (visitor/assistant/tool/system),
-#                 content_redacted, metadata jsonb, created_at
-# Then uncomment the import in backend/app/db/base.py
-
-import enum
 """Conversation + Message — durable chat history (Spec 009 FR-009, Spec 012 FR-009).
 
 One ``Conversation`` per visitor chat session; one ``Message`` per turn (visitor
