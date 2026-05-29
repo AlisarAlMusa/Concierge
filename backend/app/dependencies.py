@@ -44,6 +44,7 @@ from app.models.user import User, UserRole
 from app.services.agent_service import AgentService
 from app.services.chat_orchestrator import (
     ChatOrchestrator,
+    GuardrailClient,
     PassthroughGuardrailClient,
 )
 from app.services.classifier_client import (
@@ -54,6 +55,7 @@ from app.services.cms_page_service import CmsPageService
 from app.services.conversation_service import ConversationService
 from app.services.embedding_client import CohereEmbeddingClient
 from app.services.escalation_service import EscalationService
+from app.services.guardrail_service import GuardrailService
 from app.services.lead_service import LeadService
 from app.services.llm_client import GroqLLMClient
 from app.services.memory_service import MemoryService
@@ -636,6 +638,32 @@ def get_human_workflow(
     return HumanWorkflow(escalation_service=escalation)
 
 
+async def get_guardrail_service(
+    http: httpx.AsyncClient = Depends(get_service_client),
+    memory: MemoryService = Depends(get_memory_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> GuardrailClient:
+    """Real GuardrailService (spec 010) wired to the lifespan-shared httpx
+    client (spec 018 — X-Service-Token attached automatically) and the
+    Redis-backed MemoryService for multi-turn context.
+
+    `GUARDRAILS_USE_PASSTHROUGH=true` falls back to the no-op stub so a local
+    dev stack can run without the sidecar container up. Production paths
+    leave this unset → the real sidecar is always called.
+    """
+    import os
+
+    if os.environ.get("GUARDRAILS_USE_PASSTHROUGH", "").lower() in {"1", "true", "yes"}:
+        return PassthroughGuardrailClient()
+    settings = get_settings()
+    return GuardrailService(
+        http=http,
+        sidecar_base_url=settings.GUARDRAILS_URL,
+        session=session,
+        memory=memory,
+    )
+
+
 def get_chat_orchestrator(
     router: RouterService = Depends(get_router_service),
     agent: AgentService = Depends(get_agent_service),
@@ -645,6 +673,7 @@ def get_chat_orchestrator(
     faq: FaqWorkflow = Depends(get_faq_workflow),
     sales: SalesWorkflow = Depends(get_sales_workflow),
     human: HumanWorkflow = Depends(get_human_workflow),
+    guardrails: GuardrailClient = Depends(get_guardrail_service),
 ) -> ChatOrchestrator:
     return ChatOrchestrator(
         router_service=router,
@@ -655,5 +684,5 @@ def get_chat_orchestrator(
         faq_workflow=faq,
         sales_workflow=sales,
         human_workflow=human,
-        guardrail_client=PassthroughGuardrailClient(),
+        guardrail_client=guardrails,
     )
