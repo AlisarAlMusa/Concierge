@@ -183,6 +183,56 @@ curl -s -X POST http://localhost:8000/chat \
 # → {"message": "...", "conversation_id": "...", "intent_label": "...", "sources": [...]}
 ```
 
+### Public widget runtime surface (`/public/*`)
+
+Spec 011 calls for the browser-side widget to hit `/public/widgets/session`,
+`/public/chat`, and `/public/widgets/config`. The first two are direct
+aliases of the legacy `/widgets/session` and `/chat` routes — same handlers,
+same security model — so both URL forms work for the same payload. The
+config endpoint is only exposed under `/public`.
+
+```bash
+# 1. Mint a session token (alias of /widgets/session).
+TOKEN=$(curl -s -X POST http://localhost:8000/public/widgets/session \
+  -H 'Content-Type: application/json' \
+  -d '{"public_widget_id": "demo-widget-001", "origin": "http://localhost:3000"}' \
+  | jq -r .token)
+
+# 2. Fetch greeting + theme the widget paints on load.
+curl -s http://localhost:8000/public/widgets/config \
+  -H "Authorization: Bearer $TOKEN"
+# → {"public_widget_id": "demo-widget-001", "greeting": "...",
+#    "theme": {...}, "enabled": true}
+
+# 3. Send a chat turn (alias of /chat).
+curl -s -X POST http://localhost:8000/public/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Hi, what plans do you offer?"}'
+```
+
+Security checks the widget runtime can rely on:
+
+```bash
+# tenant_id in the body is ignored — the token's claim wins.
+curl -s -X POST http://localhost:8000/public/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "hi", "tenant_id": "00000000-0000-0000-0000-000000000000"}'
+# → 200, processed under the token's real tenant
+
+# Missing / invalid token → 401 with a machine-readable code in the body.
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/public/widgets/config
+# → 401
+
+# Disallowed origin → 403 (server-side allowlist check, not CORS).
+curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+  http://localhost:8000/public/widgets/session \
+  -H 'Content-Type: application/json' \
+  -d '{"public_widget_id": "demo-widget-001", "origin": "https://evil.example.com"}'
+# → 403
+```
+
 Try a few of the seeded topics to exercise different RAG hits:
 
 | Question | Expected RAG source |
@@ -456,4 +506,3 @@ Slug changes on PATCH are validated server-side: a slug already taken
 by a *different* page for the same tenant returns `409 conflict` rather
 than silently upserting (that path is only available through
 `POST /cms/pages`).
-

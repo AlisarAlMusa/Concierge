@@ -248,6 +248,49 @@ async def test_search_default_max_chunks_matches_spec():
     assert DEFAULT_MAX_CHUNKS == 5
 
 
+# ----- published-only filter (v1 retrieval improvement) ---------------------
+def _compiled_sql(stmt: Any) -> str:
+    """Render the SQLAlchemy statement to a SQL string for substring checks.
+
+    Cheaper and more robust than introspecting the ORM construct tree:
+    the eval baseline contract only cares whether ``cms_pages`` appears
+    as a referenced table, not which clause built it.
+    """
+    return str(stmt.compile(compile_kwargs={"literal_binds": False}))
+
+
+async def test_search_default_filters_to_published_pages():
+    """The default search path JOINs ``cms_pages`` and filters
+    ``status='published'`` — the v1 retrieval improvement."""
+    service, session, _ = _build()
+    session.queue_result(rows=[])
+
+    await service.search(query="any", tenant_id=uuid4())
+
+    assert len(session.executed) == 1
+    sql = _compiled_sql(session.executed[0])
+    assert "cms_chunks" in sql
+    assert "cms_pages" in sql, "default search must JOIN cms_pages"
+    assert "status" in sql, "default search must filter on cms_pages.status"
+
+
+async def test_search_with_published_only_false_skips_join():
+    """Setting ``published_only=False`` preserves the pre-improvement query
+    shape — the chunks-only SELECT used before the v1 filter. Required so
+    the eval script can produce a faithful baseline number."""
+    service, session, _ = _build()
+    session.queue_result(rows=[])
+
+    await service.search(query="any", tenant_id=uuid4(), published_only=False)
+
+    assert len(session.executed) == 1
+    sql = _compiled_sql(session.executed[0])
+    assert "cms_chunks" in sql
+    assert "cms_pages" not in sql, (
+        "published_only=False must not JOIN cms_pages — the eval baseline relies on this"
+    )
+
+
 # ----- index_page -----------------------------------------------------------
 async def test_index_empty_content_writes_nothing_but_clears_existing():
     """Empty content → no embedding call, no inserts; delete still runs so the

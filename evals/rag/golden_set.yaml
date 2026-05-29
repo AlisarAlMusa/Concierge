@@ -1,0 +1,141 @@
+# RAG golden set — Concierge demo tenant
+#
+# Fifteen hand-written triples grounded in ``backend/scripts/seed_demo_data.py``.
+# Every ``ground_truth_chunks`` entry refers to a CMS page slug seeded by
+# that script for the ``demo`` tenant; the eval script resolves slug → page_id
+# at runtime so the golden set survives chunk-index reshuffles after any
+# chunking-parameter change.
+#
+# Mix:
+#   * factual retrieval (single-page lookups)
+#   * pricing / policy (numeric facts + policy clauses)
+#   * hours / contact (channel + window questions)
+#   * escalation-worthy ambiguity (intentionally vague or off-corpus)
+#
+# Multiple ``ground_truth_chunks`` mean ANY of the listed pages is acceptable
+# as a top-K hit. Empty ``ground_truth_chunks`` mean "retrieval should
+# legitimately return nothing relevant" — these probe whether the retriever
+# returns low-confidence chunks for off-topic / ambiguous queries.
+
+tenant_slug: demo
+schema_version: 1
+
+triples:
+  # ===== Factual retrieval (5) ============================================
+  - id: faq_growth_plan_conversations
+    category: factual
+    question: "How many chat conversations does the Growth plan include?"
+    ideal_answer: "The Growth plan includes up to 10,000 chat conversations per month."
+    ground_truth_chunks:
+      - page_slug: pricing
+
+  - id: faq_starter_price
+    category: factual
+    question: "How much is the Starter plan?"
+    ideal_answer: "The Starter plan costs $19 per month."
+    ground_truth_chunks:
+      - page_slug: pricing
+
+  - id: faq_widget_delivery
+    category: factual
+    question: "How do I add the chat widget to my site?"
+    ideal_answer: "Paste the JavaScript snippet from your admin dashboard under Settings → Widgets into your site's <head> tag."
+    ground_truth_chunks:
+      - page_slug: shipping
+      - page_slug: product-overview
+
+  - id: faq_swag_shipping_us
+    category: factual
+    question: "How long does swag shipping take in the US?"
+    ideal_answer: "Domestic US swag orders typically arrive within 5–7 business days from our fulfillment partner in Portland, Oregon."
+    ground_truth_chunks:
+      - page_slug: shipping
+
+  - id: faq_enterprise_floor_price
+    category: factual
+    question: "What is the minimum Enterprise contract value?"
+    ideal_answer: "Enterprise contracts start at $2,500 per month, billed annually."
+    ground_truth_chunks:
+      - page_slug: pricing
+
+  # ===== Pricing / policy (4) =============================================
+  - id: policy_free_trial
+    category: pricing_policy
+    question: "Do you offer a free trial and is a credit card required?"
+    ideal_answer: "All plans include a 14-day free trial with no credit card required."
+    ground_truth_chunks:
+      - page_slug: pricing
+
+  - id: policy_refund_30_days
+    category: pricing_policy
+    question: "Can I get a refund if I cancel in the first week?"
+    ideal_answer: "Yes — we offer a no-questions-asked refund within the first 30 days of any paid plan. Email support@demo-co.example to request it."
+    ground_truth_chunks:
+      - page_slug: refund-policy
+
+  - id: policy_refund_after_30_days
+    category: pricing_policy
+    question: "What happens if I want a refund after 30 days?"
+    ideal_answer: "After 30 days we issue prorated refunds for the unused portion of the current billing period, calculated to the day."
+    ground_truth_chunks:
+      - page_slug: refund-policy
+
+  - id: policy_overage_fees
+    category: pricing_policy
+    question: "Are there overage fees if I exceed my monthly conversations?"
+    ideal_answer: "No — we don't charge overage fees on Starter or Growth. If you exceed your monthly conversations we'll send a friendly upgrade nudge in your weekly report."
+    ground_truth_chunks:
+      - page_slug: pricing
+
+  # ===== Hours / contact (3) ==============================================
+  - id: hours_email_response_starter
+    category: hours_contact
+    question: "How fast will you respond to a support email on the Starter plan?"
+    ideal_answer: "We guarantee a first response within 24 hours on the Starter plan."
+    ground_truth_chunks:
+      - page_slug: support-hours
+
+  - id: hours_live_chat_window
+    category: hours_contact
+    question: "When is live chat support available?"
+    ideal_answer: "Live chat support is staffed Monday through Friday, 9am–6pm Pacific Time, for Growth and Enterprise customers via the in-app chat in your admin dashboard."
+    ground_truth_chunks:
+      - page_slug: support-hours
+
+  - id: hours_emergency_phone
+    category: hours_contact
+    question: "Is there a phone number to call if production traffic is down?"
+    ideal_answer: "Enterprise customers have access to a 24x7 emergency phone line, intended for service-down emergencies only."
+    ground_truth_chunks:
+      - page_slug: support-hours
+
+  # ===== Escalation-worthy ambiguity (3) ==================================
+  # These probe the agent / retriever's behavior at the corpus's edge.
+  # The router classifies them as "ambiguous" → agent path, where the
+  # agent typically combines low-confidence rag_search with capture_lead
+  # or escalate. For RETRIEVAL evaluation we mainly care that we don't
+  # return obviously irrelevant chunks at high rank.
+
+  - id: ambiguous_voice_chat
+    category: escalation_worthy
+    question: "Do you support voice or video calls?"
+    ideal_answer: "Voice and video chat are out of scope at launch (planned for the Q4 release). Email support@demo-co.example if this is a blocker and a human can scope the timeline with you."
+    ground_truth_chunks:
+      - page_slug: product-overview
+
+  - id: ambiguous_crm_integration
+    category: escalation_worthy
+    question: "Do you integrate with Salesforce or HubSpot?"
+    ideal_answer: "Third-party CRM integrations are planned for the Q4 release and are not yet available. Please leave your email and a human will follow up when the integration ships."
+    ground_truth_chunks:
+      - page_slug: product-overview
+
+  - id: ambiguous_speak_to_human
+    category: escalation_worthy
+    question: "I'd like to speak to a human about a billing issue."
+    ideal_answer: "I'll get a human involved. Could you share your account email so our support team can pick up the conversation?"
+    # No specific page is the source of truth — this should trigger
+    # capture_lead + escalate at the agent layer, not a high-confidence
+    # retrieval. The retriever may still surface refund-policy or
+    # support-hours; either is acceptable, neither is required.
+    ground_truth_chunks: []

@@ -579,6 +579,20 @@ def get_widget_service(
     return WidgetService(session=session)
 
 
+def get_runtime_widget_service(
+    session: AsyncSession = Depends(get_tenant_rls_session),
+) -> WidgetService:
+    """Widget lookup bound to the tenant-scoped RLS session.
+
+    Counterpart of ``get_widget_service`` for the post-auth public runtime
+    surface (``GET /public/widgets/config``). The widget JWT has already
+    been verified by the time this DI runs, so ``app.tenant_id`` is set
+    and RLS filters to the caller's own widgets. The service method also
+    re-asserts ``WHERE tenant_id = $1`` for defense in depth.
+    """
+    return WidgetService(session=session)
+
+
 def get_tool_registry(
     rag_service: RagService = Depends(get_rag_service),
     lead_service: LeadService = Depends(get_lead_service),

@@ -11,6 +11,12 @@ Architectural invariants (frozen):
   RLS is defense-in-depth, not the primary mechanism. (Spec §6.1, §6.9.)
 * ``search`` runs exactly one ``embed_query`` and one pgvector statement;
   no hybrid retrieval, no re-ranking, no query rewriting at MVP.
+* As of the v1 retrieval improvement (``docs/EVALS.md``), the pgvector
+  query also JOINs ``cms_pages`` and filters ``status = 'published'`` so
+  the widget runtime never surfaces draft / unpublished chunks. The
+  filter is on by default; ``published_only=False`` preserves the
+  pre-improvement behavior for A/B comparison and admin debugging.
+  (Spec 005 §publication semantics.)
 * ``index_page`` is idempotent: delete-then-insert in the same transaction so
   re-indexing the same ``(tenant_id, page_id, content)`` yields the same final
   state. Empty content still issues the delete so previously-indexed chunks
@@ -37,6 +43,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import CMS_CHUNK_EMBEDDING_DIM, CmsChunk
+from app.models.cms import CmsPage, CmsPageStatus
 from app.services.chunking import chunk_page
 from app.services.tools.rag_search import RagChunk, RagSearchResult
 
@@ -89,8 +96,23 @@ class RagService:
         query: str,
         tenant_id: UUID,
         max_chunks: int = DEFAULT_MAX_CHUNKS,
+        published_only: bool = True,
     ) -> RagSearchResult:
         """Top-K cosine-similar chunks for ``query`` within ``tenant_id``.
+
+        With ``published_only=True`` (the default and the production path)
+        the query JOINs ``cms_pages`` and discards chunks whose source page
+        is in ``draft`` status. This is the v1 retrieval improvement
+        described in ``docs/EVALS.md``: it ensures visitor-facing answers
+        never quote half-finished or retracted pages, even if those pages
+        were previously published and still have indexed chunks. The
+        composite index ``ix_cms_pages_tenant_status`` keeps the JOIN
+        cheap.
+
+        ``published_only=False`` preserves the pre-improvement behavior;
+        it exists only for the evaluation script's A/B comparison and for
+        admin debugging — production callers (the agent's ``rag_search``
+        tool) always use the default.
 
         Returns an empty ``RagSearchResult`` for empty/whitespace-only queries
         without calling the embedding client or the database — the agent's
@@ -111,6 +133,14 @@ class RagService:
             .order_by(distance_col)
             .limit(max_chunks)
         )
+        if published_only:
+            # JOIN against cms_pages so retrieval reflects the live
+            # publication state, not the historical "was once published"
+            # state baked into cms_chunks. The composite index
+            # (tenant_id, status) makes this a cheap index-only filter.
+            stmt = stmt.join(CmsPage, CmsPage.id == CmsChunk.page_id).where(
+                CmsPage.status == CmsPageStatus.published
+            )
 
         rows = (await self._session.execute(stmt)).all()
         chunks = [
@@ -128,6 +158,7 @@ class RagService:
             query_chars=len(query),
             chunks_returned=len(chunks),
             max_chunks=max_chunks,
+            published_only=published_only,
         )
         return RagSearchResult(chunks=chunks, total_found=len(chunks))
 

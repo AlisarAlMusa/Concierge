@@ -20,6 +20,8 @@ Owner: Person B.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +44,25 @@ class WidgetService:
             return None
         stmt = select(Widget).where(
             Widget.public_widget_id == public_widget_id,
+            Widget.enabled.is_(True),
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_by_id(self, widget_id: UUID, *, tenant_id: UUID) -> Widget | None:
+        """Return the enabled widget for ``widget_id`` scoped to ``tenant_id``.
+
+        Used by ``GET /public/widgets/config`` after the request has a
+        verified widget JWT — the route reads both ``widget_id`` and
+        ``tenant_id`` from the token. The explicit ``WHERE tenant_id = $1``
+        runs in addition to the RLS policy the caller's session sets so
+        cross-tenant lookup is impossible even if RLS were bypassed in
+        some future test setup (defense in depth, per ``docs/SPEC.md``).
+        Disabled widgets return ``None`` so the route can surface a clean
+        404 rather than handing back stale config.
+        """
+        stmt = select(Widget).where(
+            Widget.id == widget_id,
+            Widget.tenant_id == tenant_id,
             Widget.enabled.is_(True),
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
