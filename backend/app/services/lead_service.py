@@ -11,6 +11,11 @@ has hit ``Settings.LEAD_CAPTURE_LIMIT_PER_SESSION`` within the last
 the verified widget token); we never accept it via tool arguments. Spec
 012 FR-002.
 
+All ``session.execute`` / ``session.add`` / ``session.delete`` /
+``session.flush`` calls live in ``app.repositories.lead_repository``;
+this service contains only the rate-limit math, the
+``RateLimitError`` raise, DTO construction, and logging.
+
 Owner: Person B.
 """
 
@@ -20,12 +25,12 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import RateLimitError
 from app.models.lead import Lead, LeadStatus
+from app.repositories import lead_repository
 from app.services.tools.capture_lead import CaptureLeadResult
 
 logger = structlog.get_logger(__name__)
@@ -73,8 +78,7 @@ class LeadService:
             lead_score=None,  # Owner C's /predict-lead-score lands later
             source="agent",
         )
-        self._session.add(lead)
-        await self._session.flush()
+        await lead_repository.add(self._session, lead)
         logger.info(
             "lead.captured",
             tenant_id=str(tenant_id),
@@ -103,18 +107,11 @@ class LeadService:
         if offset < 0:
             raise ValueError("list_leads: offset must be >= 0")
 
-        total_stmt = select(func.count(Lead.id)).where(Lead.tenant_id == tenant_id)
-        total = (await self._session.execute(total_stmt)).scalar_one()
-
-        items_stmt = (
-            select(Lead)
-            .where(Lead.tenant_id == tenant_id)
-            .order_by(Lead.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+        total = await lead_repository.count_for_tenant(self._session, tenant_id=tenant_id)
+        items = await lead_repository.list_for_tenant(
+            self._session, tenant_id=tenant_id, limit=limit, offset=offset
         )
-        items = (await self._session.execute(items_stmt)).scalars().all()
-        return list(items), int(total)
+        return items, total
 
     async def get_lead(self, *, tenant_id: UUID, lead_id: UUID) -> Lead | None:
         """Return one lead or ``None`` if absent / cross-tenant.
@@ -122,8 +119,9 @@ class LeadService:
         Cross-tenant access surfaces as ``None`` here so the route can map
         it to a 404 — never a 403, which would leak existence.
         """
-        stmt = select(Lead).where(Lead.tenant_id == tenant_id, Lead.id == lead_id)
-        return (await self._session.execute(stmt)).scalar_one_or_none()
+        return await lead_repository.get_for_tenant(
+            self._session, tenant_id=tenant_id, lead_id=lead_id
+        )
 
     async def update_lead(
         self,
@@ -150,7 +148,7 @@ class LeadService:
             # Empty string is an explicit clear; ``None`` means "no change".
             lead.notes = notes or None
 
-        await self._session.flush()
+        await lead_repository.flush_pending(self._session)
         logger.info(
             "lead.patched",
             tenant_id=str(tenant_id),
@@ -171,8 +169,7 @@ class LeadService:
         lead = await self.get_lead(tenant_id=tenant_id, lead_id=lead_id)
         if lead is None:
             return False
-        await self._session.delete(lead)
-        await self._session.flush()
+        await lead_repository.remove(self._session, lead)
         logger.info(
             "lead.deleted",
             tenant_id=str(tenant_id),
@@ -182,13 +179,12 @@ class LeadService:
 
     async def _enforce_session_limit(self, tenant_id: UUID, visitor_session_id: UUID) -> None:
         since = datetime.now(timezone.utc) - self._window
-        stmt = (
-            select(func.count(Lead.id))
-            .where(Lead.tenant_id == tenant_id)
-            .where(Lead.visitor_session_id == visitor_session_id)
-            .where(Lead.created_at >= since)
+        existing = await lead_repository.count_recent_for_session(
+            self._session,
+            tenant_id=tenant_id,
+            visitor_session_id=visitor_session_id,
+            since=since,
         )
-        existing = (await self._session.execute(stmt)).scalar_one()
         if existing >= self._limit:
             logger.info(
                 "lead.rate_limited",
