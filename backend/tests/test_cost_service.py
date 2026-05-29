@@ -15,7 +15,6 @@ import pytest
 from app.models.cost_event import CostOperation
 from app.services import cost_service
 
-
 # ---------------------------------------------------------------------------
 # Cost estimation
 # ---------------------------------------------------------------------------

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Secret — populated from Vault when APP_ENV != "local".
     SERVICE_AUTH_SECRET: str = ""
 
+    # MiniLM ONNX directory (spec 010 FR-017).
+    MODELS_DIR: str = "models"
+
 
 @lru_cache
 def get_settings() -> Settings:
