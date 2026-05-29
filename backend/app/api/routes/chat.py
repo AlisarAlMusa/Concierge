@@ -19,6 +19,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.tracing import set_request_baggage
 from app.dependencies import (
     get_chat_orchestrator,
     get_rate_limit_service,
@@ -52,6 +53,12 @@ async def post_chat(
     * 503 — upstream provider failure (LLM, embedding) surfaces via the
       global ``ExternalServiceError`` handler.
     """
+    # Spec 017 FR-014: tenant_id is the earliest baggage we can attach; the
+    # orchestrator sets conversation_id once it has resolved/minted it.
+    # Subsequent spans (rate limit, RLS, sidecar calls, agent loop) inherit
+    # tenant_id via BaggageSpanProcessor.
+    set_request_baggage({"tenant_id": str(tenant_id)})
+
     # Rate limit checks run before any DB work. Fail-open on Redis failure.
     await rate_limiter.check_tenant_chat_limit(tenant_id)
     await rate_limiter.check_widget_chat_limit(widget_id)
