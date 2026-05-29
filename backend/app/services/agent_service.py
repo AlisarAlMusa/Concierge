@@ -22,12 +22,16 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 from app.core.prompts import load_prompt, render_prompt
 from app.services.memory_service import MemoryEntry, MemoryService
 from app.services.tools import ToolContext, ToolError, ToolRegistry
 from app.services.tools.rag_search import RagSearchResult
+
+_tracer = trace.get_tracer(__name__)
 
 logger = structlog.get_logger(__name__)
 
@@ -111,72 +115,106 @@ class AgentService:
         same_error_strikes = 0
 
         for iteration in range(self._max_iterations):
-            response: LLMResponse = await self._llm.tool_complete(
-                messages=messages,
-                tools=tools_spec,
-                max_tokens=self._max_output_tokens,
-            )
+            # Spec 017 FR-018 — one span per loop iteration carrying the
+            # zero-based iteration index. Tool spans live as children below.
+            with _tracer.start_as_current_span("agent.iteration") as iter_span:
+                iter_span.set_attribute("agent.iteration_index", iteration)
 
-            # Fire-and-forget cost event for this LLM call (Spec 013 FR-001).
-            _fire_llm_cost_event(tenant_id, self._llm, response)
-
-            # Natural exit: no tool calls → final answer.
-            if not response.tool_calls:
-                reply = response.content or load_prompt(REFUSAL_PROMPT_FILE)
-                used_fallback = not response.content
-                self._log_completion(
-                    tenant_id,
-                    conversation_id,
-                    iteration + 1,
-                    used_fallback,
-                    route_decision,
-                )
-                return AgentTurnResult(
-                    reply=reply,
-                    sources=_dedupe(sources),
-                    agent_iterations=iteration + 1,
-                    used_refusal_fallback=used_fallback,
+                response: LLMResponse = await self._llm.tool_complete(
+                    messages=messages,
+                    tools=tools_spec,
+                    max_tokens=self._max_output_tokens,
                 )
 
-            # Tool-call path: assistant turn + sequential dispatch + tool results.
-            messages.append(_assistant_tool_call_message(response.tool_calls))
+                # Fire-and-forget cost event for this LLM call (Spec 013 FR-001).
+                _fire_llm_cost_event(tenant_id, self._llm, response)
 
-            for call in response.tool_calls:
-                logger.info(
-                    "agent_iteration",
-                    tenant_id=str(tenant_id),
-                    conversation_id=str(conversation_id),
-                    iteration=iteration + 1,
-                    tool=call.name,
-                )
-                result = await self._tools.dispatch(call.name, call.arguments, ctx)
-
-                if isinstance(result, RagSearchResult):
-                    sources.extend(chunk.source_page_id for chunk in result.chunks)
-
-                messages.append(_tool_result_message(call.id, call.name, result))
-
-                if isinstance(result, ToolError):
-                    same_error_strikes = (
-                        same_error_strikes + 1 if result.code == last_error_code else 1
+                # Natural exit: no tool calls → final answer.
+                if not response.tool_calls:
+                    iter_span.set_attribute("agent.tool_calls_count", 0)
+                    iter_span.set_attribute("agent.final_iteration", True)
+                    reply = response.content or load_prompt(REFUSAL_PROMPT_FILE)
+                    used_fallback = not response.content
+                    self._log_completion(
+                        tenant_id,
+                        conversation_id,
+                        iteration + 1,
+                        used_fallback,
+                        route_decision,
                     )
-                    last_error_code = result.code
-                    if same_error_strikes >= 2:
-                        logger.warning(
-                            "agent_repeated_tool_error",
-                            tenant_id=str(tenant_id),
-                            conversation_id=str(conversation_id),
-                            code=result.code,
+                    return AgentTurnResult(
+                        reply=reply,
+                        sources=_dedupe(sources),
+                        agent_iterations=iteration + 1,
+                        used_refusal_fallback=used_fallback,
+                    )
+
+                iter_span.set_attribute(
+                    "agent.tool_calls_count", len(response.tool_calls)
+                )
+
+                # Tool-call path: assistant turn + sequential dispatch + tool results.
+                messages.append(_assistant_tool_call_message(response.tool_calls))
+
+                for call in response.tool_calls:
+                    logger.info(
+                        "agent_iteration",
+                        tenant_id=str(tenant_id),
+                        conversation_id=str(conversation_id),
+                        iteration=iteration + 1,
+                        tool=call.name,
+                    )
+                    # Spec 017 FR-018 — per-tool span with success flag and
+                    # exception recording on the unexpected-error path. Tool
+                    # arguments are NOT captured (privacy + readability).
+                    with _tracer.start_as_current_span(
+                        f"tool.{call.name.lower()}"
+                    ) as tool_span:
+                        tool_span.set_attribute("tool.name", call.name)
+                        try:
+                            result = await self._tools.dispatch(
+                                call.name, call.arguments, ctx
+                            )
+                        except Exception as exc:
+                            tool_span.set_attribute("tool.success", False)
+                            tool_span.record_exception(exc)
+                            tool_span.set_status(StatusCode.ERROR, str(exc))
+                            raise
+                        # ToolError is a structured-result-as-error, not an
+                        # exception — surface it on the span but don't mark
+                        # the span as a hard error.
+                        tool_span.set_attribute(
+                            "tool.success", not isinstance(result, ToolError)
                         )
-                        return AgentTurnResult(
-                            reply=load_prompt(REFUSAL_PROMPT_FILE),
-                            sources=_dedupe(sources),
-                            agent_iterations=iteration + 1,
-                            used_refusal_fallback=True,
+                        if isinstance(result, ToolError):
+                            tool_span.set_attribute("tool.error_code", result.code)
+
+                    if isinstance(result, RagSearchResult):
+                        sources.extend(chunk.source_page_id for chunk in result.chunks)
+
+                    messages.append(_tool_result_message(call.id, call.name, result))
+
+                    if isinstance(result, ToolError):
+                        same_error_strikes = (
+                            same_error_strikes + 1 if result.code == last_error_code else 1
                         )
-                else:
-                    same_error_strikes = 0
-                    last_error_code = None
+                        last_error_code = result.code
+                        if same_error_strikes >= 2:
+                            logger.warning(
+                                "agent_repeated_tool_error",
+                                tenant_id=str(tenant_id),
+                                conversation_id=str(conversation_id),
+                                code=result.code,
+                            )
+                            return AgentTurnResult(
+                                reply=load_prompt(REFUSAL_PROMPT_FILE),
+                                sources=_dedupe(sources),
+                                agent_iterations=iteration + 1,
+                                used_refusal_fallback=True,
+                            )
+                    else:
+                        same_error_strikes = 0
+                        last_error_code = None
 
         # Iteration cap hit without a final message.
         logger.warning(

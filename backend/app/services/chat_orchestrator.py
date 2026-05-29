@@ -32,9 +32,11 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 import structlog
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.core.redaction import redact
+from app.core.tracing import set_request_baggage
 from app.models.conversation import MessageRole
 from app.services.agent_service import AgentService, AgentTurnResult
 from app.services.conversation_service import ConversationService
@@ -49,6 +51,7 @@ from app.services.workflows import (
 )
 
 logger = structlog.get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 # Canned visitor-facing replies for the non-agent route paths. Kept inline so
 # the orchestrator stays a single self-contained turn coordinator. Promote to
@@ -209,7 +212,41 @@ class ChatOrchestrator:
         6. Write redacted visitor + assistant turns to memory (skipped for
            ``drop`` so spam doesn't pollute conversation history).
         7. Return ``ChatTurn``.
+
+        Spec 017 FR-016 — wrapped in ``chat.handle_turn`` root span carrying
+        ``chat.visitor_message.length``, ``chat.tenant_id``,
+        ``chat.conversation_id``. The conversation_id baggage is attached as
+        soon as the id is resolved/minted so every child span downstream
+        (router, guardrails, agent, tool, HTTPX client to sidecars) inherits
+        it via ``BaggageSpanProcessor``.
         """
+        with _tracer.start_as_current_span("chat.handle_turn") as _root_span:
+            return await self._handle_turn_inner(
+                _root_span,
+                tenant_id=tenant_id,
+                user_message=user_message,
+                conversation_id=conversation_id,
+                visitor_session_id=visitor_session_id,
+                widget_id=widget_id,
+                tenant_persona=tenant_persona,
+            )
+
+    async def _handle_turn_inner(
+        self,
+        _root_span: Any,
+        *,
+        tenant_id: UUID,
+        user_message: str,
+        conversation_id: UUID | None,
+        visitor_session_id: UUID | None,
+        widget_id: UUID | None,
+        tenant_persona: str | None,
+    ) -> ChatTurn:
+        _root_span.set_attribute(
+            "chat.visitor_message.length", len(user_message or "")
+        )
+        _root_span.set_attribute("chat.tenant_id", str(tenant_id))
+
         conv_id = conversation_id or uuid4()
         # Resolve / mint a durable conversation row up front so every
         # message we persist below has a valid FK target. Skipped when the
@@ -223,6 +260,11 @@ class ChatOrchestrator:
                 visitor_session_id=visitor_session_id,
             )
             conv_id = conversation.id
+
+        # Spec 017 FR-014 — attach conversation_id to baggage so every
+        # downstream span inherits it. tenant_id was set at the route layer.
+        set_request_baggage({"conversation_id": str(conv_id)})
+        _root_span.set_attribute("chat.conversation_id", str(conv_id))
 
         log = logger.bind(
             tenant_id=str(tenant_id),

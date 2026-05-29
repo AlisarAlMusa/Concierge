@@ -22,6 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories import tenant_repository
@@ -29,6 +30,18 @@ from app.services.chat_orchestrator import GuardrailDecision
 from app.services.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
+
+
+def _record_guardrails(span, decision: GuardrailDecision) -> None:
+    """Attach `guardrails.allowed` / `guardrails.reason` to the span.
+
+    Spec 017 FR-019. Kept as a helper so both check_input and check_output
+    use identical attribute names.
+    """
+    span.set_attribute("guardrails.allowed", bool(decision.allowed))
+    if decision.reason:
+        span.set_attribute("guardrails.reason", str(decision.reason))
 
 DEFAULT_TIMEOUT_SECONDS = 2.0
 DEFAULT_HISTORY_TURNS = 6
@@ -108,45 +121,54 @@ class GuardrailService:
         tenant_id: UUID,
         conversation_id: UUID,
     ) -> GuardrailDecision:
-        tenant_config = await tenant_repository.get_guardrails_config(
-            self._session, tenant_id
-        )
+        # Spec 017 FR-019 — business span carrying the verdict (allowed +
+        # reason). The outbound HTTPX client span remains a child of this.
+        with _tracer.start_as_current_span("guardrails.check_input") as span:
+            tenant_config = await tenant_repository.get_guardrails_config(
+                self._session, tenant_id
+            )
 
-        history_entries = await self._memory.load(tenant_id, conversation_id)
-        cutoff = _history_turns()
-        if cutoff:
-            history_entries = history_entries[-cutoff:]
-        history_payload = [
-            {
-                "role": "visitor" if e.role == "visitor" else "assistant",
-                "content": e.content_redacted,
+            history_entries = await self._memory.load(tenant_id, conversation_id)
+            cutoff = _history_turns()
+            if cutoff:
+                history_entries = history_entries[-cutoff:]
+            history_payload = [
+                {
+                    "role": "visitor" if e.role == "visitor" else "assistant",
+                    "content": e.content_redacted,
+                }
+                for e in history_entries
+                if e.role in {"visitor", "assistant"}
+            ]
+
+            payload = {
+                "message": message,
+                "tenant_id": str(tenant_id),
+                "conversation_id": str(conversation_id),
+                "tenant_config": tenant_config or {},
+                "conversation_history": history_payload,
             }
-            for e in history_entries
-            if e.role in {"visitor", "assistant"}
-        ]
 
-        payload = {
-            "message": message,
-            "tenant_id": str(tenant_id),
-            "conversation_id": str(conversation_id),
-            "tenant_config": tenant_config or {},
-            "conversation_history": history_payload,
-        }
+            try:
+                data = await self._post("/guardrails/check-input", payload)
+            except httpx.HTTPError as exc:
+                logger.error("guardrails check-input failed: %s", exc)
+                fallback = (
+                    _fail_open_decision("sidecar_unreachable", message)
+                    if _fail_open()
+                    else _fail_closed_decision("sidecar_unreachable", message)
+                )
+                _record_guardrails(span, fallback)
+                return fallback
 
-        try:
-            data = await self._post("/guardrails/check-input", payload)
-        except httpx.HTTPError as exc:
-            logger.error("guardrails check-input failed: %s", exc)
-            if _fail_open():
-                return _fail_open_decision("sidecar_unreachable", message)
-            return _fail_closed_decision("sidecar_unreachable", message)
-
-        return GuardrailDecision(
-            allowed=bool(data.get("allowed", False)),
-            redacted_text=str(data.get("redacted_text", message)),
-            safe_reply=data.get("safe_reply"),
-            reason=data.get("reason"),
-        )
+            decision = GuardrailDecision(
+                allowed=bool(data.get("allowed", False)),
+                redacted_text=str(data.get("redacted_text", message)),
+                safe_reply=data.get("safe_reply"),
+                reason=data.get("reason"),
+            )
+            _record_guardrails(span, decision)
+            return decision
 
     async def check_output(
         self,
@@ -154,18 +176,25 @@ class GuardrailService:
         message: str,
         tenant_id: UUID,
     ) -> GuardrailDecision:
-        payload = {"message": message, "tenant_id": str(tenant_id)}
-        try:
-            data = await self._post("/guardrails/check-output", payload)
-        except httpx.HTTPError as exc:
-            logger.error("guardrails check-output failed: %s", exc)
-            if _fail_open():
-                return _fail_open_decision("sidecar_unreachable", message)
-            return _fail_closed_decision("sidecar_unreachable", message)
+        with _tracer.start_as_current_span("guardrails.check_output") as span:
+            payload = {"message": message, "tenant_id": str(tenant_id)}
+            try:
+                data = await self._post("/guardrails/check-output", payload)
+            except httpx.HTTPError as exc:
+                logger.error("guardrails check-output failed: %s", exc)
+                fallback = (
+                    _fail_open_decision("sidecar_unreachable", message)
+                    if _fail_open()
+                    else _fail_closed_decision("sidecar_unreachable", message)
+                )
+                _record_guardrails(span, fallback)
+                return fallback
 
-        return GuardrailDecision(
-            allowed=bool(data.get("allowed", False)),
-            redacted_text=str(data.get("redacted_text", message)),
-            safe_reply=data.get("safe_reply"),
-            reason=data.get("reason"),
-        )
+            decision = GuardrailDecision(
+                allowed=bool(data.get("allowed", False)),
+                redacted_text=str(data.get("redacted_text", message)),
+                safe_reply=data.get("safe_reply"),
+                reason=data.get("reason"),
+            )
+            _record_guardrails(span, decision)
+            return decision

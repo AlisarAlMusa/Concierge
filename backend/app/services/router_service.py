@@ -28,9 +28,12 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 import structlog
+from opentelemetry import trace
 from pydantic import BaseModel, Field
 
 from app.core.errors import ExternalServiceError
+
+_tracer = trace.get_tracer(__name__)
 
 # Closed set of labels the classifier may return. Anything outside this set is
 # treated as `unknown_label` and routed to the agent for safe handling.
@@ -106,34 +109,50 @@ class RouterService:
         tenant_id: UUID,
         conversation_id: UUID,
     ) -> RouteDecision:
-        log = self._log.bind(
-            tenant_id=str(tenant_id),
-            conversation_id=str(conversation_id),
-        )
+        # Spec 017 FR-017 — wrap the routing decision in a span carrying the
+        # intent label and confidence so Phoenix shows the chosen path inline
+        # with the rest of the chat trace. The span name is `router.classify`
+        # per the FR (the method is `decide` in this codebase — same operation).
+        with _tracer.start_as_current_span("router.classify") as span:
+            log = self._log.bind(
+                tenant_id=str(tenant_id),
+                conversation_id=str(conversation_id),
+            )
 
-        try:
-            classification = await self._classifier.classify(text=text)
-        except ExternalServiceError as exc:
-            # Fail open: a degraded classifier must not drop user traffic.
-            decision = RouteDecision(path="agent", reason="classifier_unavailable")
-            log.warning(
-                "router.classifier_unavailable",
-                error=str(exc),
+            try:
+                classification = await self._classifier.classify(text=text)
+            except ExternalServiceError as exc:
+                # Fail open: a degraded classifier must not drop user traffic.
+                decision = RouteDecision(path="agent", reason="classifier_unavailable")
+                log.warning(
+                    "router.classifier_unavailable",
+                    error=str(exc),
+                    decision=decision.path,
+                    reason=decision.reason,
+                )
+                span.set_attribute("router.intent_label", "")
+                span.set_attribute("router.confidence", 0.0)
+                span.set_attribute("router.reason", decision.reason)
+                return decision
+
+            decision = self._decide_from_classification(classification)
+
+            log.info(
+                "router.decision",
                 decision=decision.path,
                 reason=decision.reason,
+                confidence=decision.confidence,
+                classifier_label=decision.classifier_label,
             )
+            span.set_attribute(
+                "router.intent_label", decision.classifier_label or ""
+            )
+            span.set_attribute(
+                "router.confidence", float(decision.confidence or 0.0)
+            )
+            span.set_attribute("router.path", decision.path)
+            span.set_attribute("router.reason", decision.reason)
             return decision
-
-        decision = self._decide_from_classification(classification)
-
-        log.info(
-            "router.decision",
-            decision=decision.path,
-            reason=decision.reason,
-            confidence=decision.confidence,
-            classifier_label=decision.classifier_label,
-        )
-        return decision
 
     def _decide_from_classification(self, classification: ClassifierResponse) -> RouteDecision:
         """Pure mapping from a successful classification to a RouteDecision."""
