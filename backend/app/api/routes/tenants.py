@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_user_manager
@@ -161,11 +161,16 @@ async def reactivate_tenant(
 )
 async def delete_tenant(
     tenant_id: UUID,
+    request: Request,
     manager: User = Depends(require_tenant_manager),
     session: AsyncSession = Depends(get_session),
 ):
     await tenant_service.delete_tenant(
-        session, tenant_id, actor_id=manager.id, actor_role=manager.role.value
+        session,
+        tenant_id,
+        actor_id=manager.id,
+        actor_role=manager.role.value,
+        redis=request.app.state.redis,
     )
     return {"status": "deleting", "tenant_id": str(tenant_id)}
 

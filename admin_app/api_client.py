@@ -61,7 +61,7 @@ class APIClient:
     # ── Auth ──────────────────────────────────────────────────────────────────
 
     def login(self, email: str, password: str) -> dict:
-        return self._request("POST", "/auth/login", json={"username": email, "password": password})
+        return self._request("POST", "/auth/login", data={"username": email, "password": password})
 
     def me(self) -> dict:
         return self._request("GET", "/auth/me")

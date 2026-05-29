@@ -136,6 +136,7 @@ async def delete_tenant(
     tenant_id: UUID,
     actor_id: UUID,
     actor_role: str,
+    redis=None,
 ) -> Tenant:
     """Trigger deletion: set status=deleting, fire erasure async. Idempotent if already deleting."""
     tenant = await get_tenant_or_404(session, tenant_id)
@@ -146,14 +147,9 @@ async def delete_tenant(
     tenant = await tenant_repository.update_tenant_status(session, tenant_id, TenantStatus.deleting)
     await session.commit()
 
-    # Fire erasure in background (spec 015). Import here to avoid circular dependency
-    # when erasure_service is not yet implemented.
-    try:
-        from app.services.erasure_service import purge_tenant  # noqa: PLC0415
+    from app.services.erasure_service import purge_tenant  # noqa: PLC0415
 
-        asyncio.create_task(purge_tenant(tenant_id))
-    except (ImportError, AttributeError):
-        log.warning("erasure_service.purge_tenant not yet implemented — skipping")
+    asyncio.create_task(purge_tenant(tenant_id, redis))
 
     write_audit_event(
         action="tenant_delete_triggered",

@@ -1,26 +1,23 @@
 """leads admin fields — status enum, notes, updated_at
 
 Revision ID: 0005_leads_admin
-Revises: 0003
+Revises: 0004b_post_cms_extras
 Create Date: 2026-05-28
 
 Person B — Spec 012 FR-006: the admin ``PATCH /leads/{lead_id}`` route needs
-to update ``status`` and ``notes``. The original ``0003_chat_persistence``
-migration that creates the ``leads`` table predates that contract; this
+to update ``status`` and ``notes``. The ``leads`` table is created by
+``0003b_chat_persistence`` and predates this admin contract; this
 migration brings the row schema in line with the spec without rewriting
 any earlier file.
 
-Why ``down_revision = "0003"`` (and not ``"0004"``):
+Parent updated as part of the migration-graph repair:
 
-* The ``leads`` table is created by ``0003_chat_persistence`` and this
-  migration only touches that one table. Following the ``0003 → 0005``
-  chain keeps the change reviewable in isolation.
-* The repo currently has two parallel ``0004_*`` heads (cms_pages and
-  remaining_tables) authored by different owners. Reconciling those heads
-  is **not** in this PR's scope — they will be merged with a follow-up
-  alembic merge revision. Pointing this migration at ``"0003"`` makes the
-  merge straightforward (both new ``0005`` and the two ``0004`` heads
-  share ancestor ``0003``).
+* Original ``down_revision = "0003"`` chained off the ancestor of the
+  two parallel broken ``0004_*`` heads — that workaround is no longer
+  needed now that the graph is linear.
+* New ``down_revision = "0004b_post_cms_extras"`` puts this migration
+  at the tip of the single linear chain
+  ``0001 → 0002 → 0003 → 0003b_chat_persistence → 0004 → 0004b_post_cms_extras → 0005_leads_admin``.
 
 Idempotent: the ``lead_status`` enum is created with ``checkfirst=True`` so
 re-running against a partially-migrated database does not crash.
@@ -34,7 +31,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0005_leads_admin"
-down_revision: Union[str, None] = "0003"
+down_revision: Union[str, None] = "0004b_post_cms_extras"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

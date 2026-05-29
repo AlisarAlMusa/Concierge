@@ -1,11 +1,20 @@
 """chat persistence — widgets, conversations, messages, leads, escalations
 
-Revision ID: 0003
-Revises: 0002
+Revision ID: 0003b_chat_persistence
+Revises: 0003
 Create Date: 2026-05-28
 
 Person B (PR 3 — widget + chat persistence). Creates the durable storage
 behind Spec 009 FR-009, Spec 011, and Spec 012.
+
+Re-parented onto ``0003`` (users-roles) as part of the migration-graph
+repair: this file used to claim ``revision = "0003"`` itself and lived in
+parallel with ``0003_users_roles`` and the two ``0004_*`` heads. The
+duplicate revision ids made ``alembic upgrade head`` fail with
+``"Multiple head revisions are present"``. The fix renumbers this file to
+the unique id ``0003b_chat_persistence`` and chains it linearly after
+``0003`` so the historical SQL is preserved exactly while alembic sees
+one head.
 
 Enum-creation pattern (important):
 
@@ -39,8 +48,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0003"
-down_revision: Union[str, None] = "0002"
+revision: str = "0003b_chat_persistence"
+down_revision: Union[str, None] = "0003"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

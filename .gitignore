@@ -55,6 +55,8 @@ htmlcov/
 
 #agent
 .claude/
+!.claude/skills/
+!.claude/skills/**
 
 # Eval artifacts — committed: golden_set.json + golden_set.sha256.
 # Not committed: per-run report and LLM response cache (provider keys + costs

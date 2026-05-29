@@ -1,13 +1,19 @@
 """cms_pages — admin-authored ground truth for RAG retrieval
 
 Revision ID: 0004
-Revises: 0003
+Revises: 0003b_chat_persistence
 Create Date: 2026-05-28
 
 Person B. Creates the ``cms_pages`` table behind ``POST /cms/pages``. The
 table stores the human-authored source content; ``cms_chunks`` continues
 to store the derived embedding rows (delete-then-insert through
 ``RagService.index_page``).
+
+Parent reset from ``"0003"`` → ``"0003b_chat_persistence"`` as part of
+the migration-graph repair (see ``0003b_chat_persistence.py`` docstring).
+The CMS pages table itself does not depend on widgets/conversations/etc.,
+but linearising after the chat-persistence revision keeps the DAG
+strictly single-headed and reflects the order CMS work landed.
 
 Enum-creation pattern matches 0003: declared with ``create_type=False``
 and created explicitly via ``.create(bind, checkfirst=True)`` so the
@@ -33,7 +39,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0004"
-down_revision: Union[str, None] = "0003"
+down_revision: Union[str, None] = "0003b_chat_persistence"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

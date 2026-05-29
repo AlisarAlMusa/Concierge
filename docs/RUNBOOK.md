@@ -51,11 +51,71 @@ consulted and the dependency rejects every request with 403 (a warning is
 logged on boot). Set `SERVICE_AUTH_SECRET` in `.env` for offline work; the
 warning is intentional and tells you you're in fallback mode.
 
+## Migrations
+
+Apply the full chain on a fresh database:
+
+```bash
+cd backend
+uv run alembic upgrade head
+```
+
+The current linear chain is:
+
+```
+0001_initial
+  → 0002_cms_chunks
+  → 0003_users_roles
+  → 0003b_chat_persistence
+  → 0004_cms_pages
+  → 0004b_post_cms_extras       (guardrail_configs, retro RLS, deferred cms_chunks FK)
+  → 0005_leads_admin_fields     (head)
+```
+
+Verify with `uv run alembic heads` — there must be exactly one head
+(`0005_leads_admin`). `uv run alembic upgrade head` succeeds on a fresh
+database against pgvector + pgcrypto.
+
+### Existing local databases — version-row reset
+
+Stacks created **before** this repair may have an `alembic_version` row
+holding one of the now-renamed revision ids (`"0003"` referring to chat
+persistence, or `"0004"` referring to the removed `0004_remaining_tables`).
+Alembic will refuse to advance from those ids because they no longer
+exist in the version directory.
+
+Fastest fix is to drop the local database and re-apply:
+
+```bash
+docker compose down -v        # nukes the postgres volume
+docker compose up -d postgres
+docker compose exec api uv run alembic upgrade head
+```
+
+If you must preserve data, manually re-stamp the version row to the
+matching new id (run the SQL on the existing DB only — never on a fresh
+one):
+
+```sql
+-- chat-persistence stamp (old "0003" via 0003_chat_persistence.py)
+UPDATE alembic_version SET version_num = '0003b_chat_persistence'
+ WHERE version_num = '0003'
+   AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'widgets');
+
+-- post-cms-extras stamp (old "0004" via 0004_remaining_tables.py)
+UPDATE alembic_version SET version_num = '0004b_post_cms_extras'
+ WHERE version_num = '0004'
+   AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'guardrail_configs');
+```
+
+After re-stamping, `uv run alembic upgrade head` will continue cleanly.
+
 ## Demo seed data (Owner B)
 
-After the stack is up and migrations `0001`–`0003` have applied, run the
-seed script to populate one tenant, one widget, and a small RAG corpus
-covering pricing / refunds / shipping / support / product overview.
+After the stack is up and migrations have applied (chain ends at
+`0005_leads_admin`), run the seed script to populate one tenant, one
+widget, and a small RAG corpus covering pricing / refunds / shipping /
+support / product overview.
 Re-running is safe — the script is idempotent (Tenant + Widget upsert by
 natural key; CMS chunks are written via `RagService.index_page` which
 delete-then-inserts per `(tenant_id, page_id)`).
@@ -121,6 +181,56 @@ curl -s -X POST http://localhost:8000/chat \
   -H 'Content-Type: application/json' \
   -d '{"message": "How much does the Growth plan cost?"}'
 # → {"message": "...", "conversation_id": "...", "intent_label": "...", "sources": [...]}
+```
+
+### Public widget runtime surface (`/public/*`)
+
+Spec 011 calls for the browser-side widget to hit `/public/widgets/session`,
+`/public/chat`, and `/public/widgets/config`. The first two are direct
+aliases of the legacy `/widgets/session` and `/chat` routes — same handlers,
+same security model — so both URL forms work for the same payload. The
+config endpoint is only exposed under `/public`.
+
+```bash
+# 1. Mint a session token (alias of /widgets/session).
+TOKEN=$(curl -s -X POST http://localhost:8000/public/widgets/session \
+  -H 'Content-Type: application/json' \
+  -d '{"public_widget_id": "demo-widget-001", "origin": "http://localhost:3000"}' \
+  | jq -r .token)
+
+# 2. Fetch greeting + theme the widget paints on load.
+curl -s http://localhost:8000/public/widgets/config \
+  -H "Authorization: Bearer $TOKEN"
+# → {"public_widget_id": "demo-widget-001", "greeting": "...",
+#    "theme": {...}, "enabled": true}
+
+# 3. Send a chat turn (alias of /chat).
+curl -s -X POST http://localhost:8000/public/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Hi, what plans do you offer?"}'
+```
+
+Security checks the widget runtime can rely on:
+
+```bash
+# tenant_id in the body is ignored — the token's claim wins.
+curl -s -X POST http://localhost:8000/public/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "hi", "tenant_id": "00000000-0000-0000-0000-000000000000"}'
+# → 200, processed under the token's real tenant
+
+# Missing / invalid token → 401 with a machine-readable code in the body.
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8000/public/widgets/config
+# → 401
+
+# Disallowed origin → 403 (server-side allowlist check, not CORS).
+curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+  http://localhost:8000/public/widgets/session \
+  -H 'Content-Type: application/json' \
+  -d '{"public_widget_id": "demo-widget-001", "origin": "https://evil.example.com"}'
+# → 403
 ```
 
 Try a few of the seeded topics to exercise different RAG hits:
@@ -396,4 +506,3 @@ Slug changes on PATCH are validated server-side: a slug already taken
 by a *different* page for the same tenant returns `409 conflict` rather
 than silently upserting (that path is only available through
 `POST /cms/pages`).
-
