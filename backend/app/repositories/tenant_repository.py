@@ -48,6 +48,55 @@ async def update_tenant_status(
     return tenant
 
 
+async def get_guardrails_config(
+    session: AsyncSession, tenant_id: UUID
+) -> dict:
+    """Return the JSONB `guardrails_config` for a tenant (or `{}`).
+
+    Spec 010 FR-022. Read once per chat turn by GuardrailService.
+    """
+    result = await session.execute(
+        select(Tenant.guardrails_config).where(Tenant.id == tenant_id)
+    )
+    config = result.scalar_one_or_none()
+    return dict(config) if config else {}
+
+
+async def update_guardrails_config(
+    session: AsyncSession, tenant_id: UUID, partial: dict
+) -> Tenant:
+    """Partial-merge `partial` into the tenant's `guardrails_config` JSONB.
+
+    PATCH semantics: only the keys present in `partial` are overwritten;
+    the rest of the JSONB stays untouched. This is the same behaviour as
+    Postgres's `jsonb || jsonb` operator — we use that operator at the SQL
+    layer so the update is one round-trip.
+
+    Spec 010 FR-023.
+    """
+    if not partial:
+        # No-op PATCH: refresh and return.
+        result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
+        if tenant is None:
+            raise ValueError(f"Tenant {tenant_id} not found")
+        return tenant
+
+    # Avoid loading and re-saving the whole row — let Postgres merge.
+    await session.execute(
+        Tenant.__table__.update()
+        .where(Tenant.id == tenant_id)
+        .values(
+            guardrails_config=Tenant.guardrails_config.op("||")(partial),
+        )
+    )
+    result = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if tenant is None:
+        raise ValueError(f"Tenant {tenant_id} not found")
+    return tenant
+
+
 async def get_usage_summary(session: AsyncSession, tenant_id: UUID) -> dict:
     """Return per-operation and total aggregate cost metrics for a tenant.
 

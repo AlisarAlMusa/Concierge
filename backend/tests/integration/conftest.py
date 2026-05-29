@@ -119,4 +119,14 @@ def model_server_app() -> FastAPI:
 
 @pytest.fixture()
 def guardrails_sidecar_app() -> FastAPI:
-    return _load_sidecar_app("guardrails_sidecar", REPO_ROOT / "guardrails_sidecar")
+    # `guardrails_sidecar` now imports `onnxruntime`, `tokenizers`, `numpy` at
+    # startup (spec 010 FR-017). The backend's venv intentionally does not
+    # ship those — constitution V keeps the API image lean. Skip when the
+    # deps are absent; the sidecar's own tests cover its routes end-to-end.
+    try:
+        return _load_sidecar_app("guardrails_sidecar", REPO_ROOT / "guardrails_sidecar")
+    except ModuleNotFoundError as exc:
+        pytest.skip(
+            f"guardrails_sidecar deps not installed in backend venv ({exc.name}); "
+            f"run guardrails_sidecar's own test suite for endpoint coverage"
+        )

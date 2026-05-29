@@ -22,6 +22,11 @@ build/
 # Large CSV training/eval data — stays out of git; SHA-256 in model card is the contract.
 model_server/artifacts/data/
 
+# Exception: guardrails sidecar's MiniLM ONNX is a fixed published model
+# (sentence-transformers/all-MiniLM-L6-v2) needed for the local topic-similarity
+# lane (spec 010 FR-017). Hash-verified at startup against the committed .sha256.
+!guardrails_sidecar/models/minilm_l6_v2.onnx
+
 # Windows alternate data streams (WSL clone noise)
 *:Zone.Identifier
 
