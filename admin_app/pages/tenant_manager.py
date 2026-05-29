@@ -6,6 +6,7 @@ import streamlit as st
 
 from api_client import APIError, get_client, require_auth
 
+
 require_auth(allowed_roles=["tenant_manager"])
 
 st.title("🏢 Platform Management")

@@ -105,7 +105,7 @@ services:
       - minio_data:/data
 
   phoenix:
-    image: arizeai/phoenix:latest
+    image: arizephoenix/phoenix:latest
     ports:
       - "6006:6006"   # UI
       - "4317:4317"   # OTLP gRPC receiver
@@ -130,10 +130,14 @@ services:
 
   vault-init:
     image: hashicorp/vault:latest
+    cap_add:
+      - IPC_LOCK
     depends_on:
       vault:
         condition: service_healthy
     env_file: .env
+    environment:
+      VAULT_ADDR: http://vault:8200
     volumes:
       - ./scripts/seed_vault.sh:/seed_vault.sh:ro
     command: sh /seed_vault.sh
