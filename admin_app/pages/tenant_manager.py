@@ -20,7 +20,7 @@ try:
 except APIError as exc:
     if exc.status_code == 401:
         st.session_state.clear()
-        st.switch_page("app.py")
+        st.session_state.clear(); st.rerun()
         st.stop()
     st.error(str(exc))
     tenants = []

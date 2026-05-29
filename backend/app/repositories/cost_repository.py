@@ -23,9 +23,7 @@ async def insert_cost_event(session: AsyncSession, event: CostEvent) -> None:
     await session.flush()
 
 
-async def get_usage_summary_by_operation(
-    session: AsyncSession, tenant_id: UUID
-) -> list[dict]:
+async def get_usage_summary_by_operation(session: AsyncSession, tenant_id: UUID) -> list[dict]:
     """Return per-operation aggregate rows for a tenant.
 
     Each dict has keys: operation, input_tokens, output_tokens, cost_usd.
@@ -36,9 +34,7 @@ async def get_usage_summary_by_operation(
             CostEvent.operation,
             func.coalesce(func.sum(CostEvent.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(CostEvent.output_tokens), 0).label("output_tokens"),
-            func.coalesce(
-                func.sum(CostEvent.estimated_cost_usd), Decimal("0")
-            ).label("cost_usd"),
+            func.coalesce(func.sum(CostEvent.estimated_cost_usd), Decimal("0")).label("cost_usd"),
         )
         .where(CostEvent.tenant_id == tenant_id)
         .group_by(CostEvent.operation)
@@ -60,9 +56,9 @@ async def get_total_usage(session: AsyncSession, tenant_id: UUID) -> dict:
         select(
             func.coalesce(func.sum(CostEvent.input_tokens), 0).label("total_input_tokens"),
             func.coalesce(func.sum(CostEvent.output_tokens), 0).label("total_output_tokens"),
-            func.coalesce(
-                func.sum(CostEvent.estimated_cost_usd), Decimal("0")
-            ).label("total_cost_usd"),
+            func.coalesce(func.sum(CostEvent.estimated_cost_usd), Decimal("0")).label(
+                "total_cost_usd"
+            ),
         ).where(CostEvent.tenant_id == tenant_id)
     )
     row = result.one()

@@ -27,6 +27,11 @@ async def get_tenant(session: AsyncSession, tenant_id: UUID) -> Tenant | None:
     return result.scalar_one_or_none()
 
 
+async def get_tenant_by_slug(session: AsyncSession, slug: str) -> Tenant | None:
+    result = await session.execute(select(Tenant).where(Tenant.slug == slug))
+    return result.scalar_one_or_none()
+
+
 async def get_all_tenants(session: AsyncSession) -> list[Tenant]:
     """Return all tenants excluding deleted ones."""
     result = await session.execute(
@@ -109,9 +114,7 @@ async def get_usage_summary(session: AsyncSession, tenant_id: UUID) -> dict:
             CostEvent.operation,
             func.coalesce(func.sum(CostEvent.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(CostEvent.output_tokens), 0).label("output_tokens"),
-            func.coalesce(
-                func.sum(CostEvent.estimated_cost_usd), Decimal("0")
-            ).label("cost_usd"),
+            func.coalesce(func.sum(CostEvent.estimated_cost_usd), Decimal("0")).label("cost_usd"),
         )
         .where(CostEvent.tenant_id == tenant_id)
         .group_by(CostEvent.operation)

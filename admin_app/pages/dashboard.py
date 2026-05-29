@@ -21,13 +21,18 @@ try:
     with st.spinner("Loading…"):
         cms_pages = client.list_cms_pages()
         usage = client.get_usage_summary()
-        leads = client.list_leads()
 except APIError as exc:
     if exc.status_code == 401:
+        st.warning("Session expired. Please log in again.")
         st.session_state.clear()
-        st.switch_page("app.py")
+        st.rerun()
         st.stop()
     st.error(str(exc))
+
+try:
+    leads = client.list_leads()
+except APIError as exc:
+    leads = []  # leads endpoint requires service token — not available in admin UI yet
 
 # ── Summary metrics ───────────────────────────────────────────────────────────
 published = sum(1 for p in cms_pages if p.get("status") == "published")

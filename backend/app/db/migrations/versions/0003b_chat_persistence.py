@@ -1,7 +1,7 @@
 """chat persistence — widgets, conversations, messages, leads, escalations
 
 Revision ID: 0003b_chat_persistence
-Revises: 0003
+Revises: 0003_users
 Create Date: 2026-05-28
 
 Person B (PR 3 — widget + chat persistence). Creates the durable storage
@@ -49,7 +49,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0003b_chat_persistence"
-down_revision: Union[str, None] = "0003"
+down_revision: Union[str, None] = "0003_users"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

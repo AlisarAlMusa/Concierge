@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    admin_cms,
     admin_config,
     audit_logs,
     auth,
@@ -11,6 +12,7 @@ from app.api.routes import (
     health,
     leads,
     public,
+    public_site,
     tenants,
     widgets,
 )
@@ -25,6 +27,7 @@ api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(tenants.router, prefix="/platform/tenants")
 api_router.include_router(audit_logs.router, prefix="/platform")
 api_router.include_router(admin_config.router, prefix="/tenant")
+api_router.include_router(admin_cms.router, prefix="/tenant/cms")
 api_router.include_router(cms.router, prefix="/cms")
 api_router.include_router(widgets.router, prefix="/widgets")
 api_router.include_router(chat.router, prefix="/chat")
@@ -36,3 +39,5 @@ api_router.include_router(costs.router, prefix="/costs")
 # The original ``/widgets/session`` and ``/chat`` routes are intentionally
 # retained as backward-compatible duplicates.
 api_router.include_router(public.router, prefix="/public")
+# Public tenant website — unauthenticated, slug-based, HTML + optional JSON.
+api_router.include_router(public_site.router, prefix="/sites")

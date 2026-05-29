@@ -18,8 +18,9 @@ def _load_pages() -> list[dict]:
         return client.list_cms_pages()
     except APIError as exc:
         if exc.status_code == 401:
+            st.warning("Session expired. Please log in again.")
             st.session_state.clear()
-            st.switch_page("app.py")
+            st.rerun()
             st.stop()
         st.error(str(exc))
         return []
