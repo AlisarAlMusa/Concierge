@@ -55,3 +55,11 @@ testpaths = ["tests"]
 markers = [
     "integration: tests that require a live PostgreSQL database (set TEST_DATABASE_URL to enable)",
 ]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "asgi-lifespan>=2.1.0",
+    "fakeredis>=2.35.1",
+    "pytest-asyncio>=1.3.0",
+]

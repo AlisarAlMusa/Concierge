@@ -10,7 +10,7 @@
 
 **Purpose**: Add MinIO dependency — required before any erasure code can import the SDK.
 
-- [ ] T001 Add `"minio>=7.2"` to `backend/pyproject.toml` dependencies list and run `uv sync` from `backend/`
+- [x] T001 Add `"minio>=7.2"` to `backend/pyproject.toml` dependencies list and run `uv sync` from `backend/`
 
 **Checkpoint**: `uv run python -c "import minio; print('ok')"` prints `ok`.
 
@@ -22,8 +22,8 @@
 
 **⚠️ CRITICAL**: T002 and T003 must complete before T004–T009 (the erasure body).
 
-- [ ] T002 Update `backend/app/api/routes/tenants.py` — in `DELETE /platform/tenants/{tenant_id}` handler, add `request: Request` parameter and pass `request.app.state.redis` when calling `tenant_service.delete_tenant`
-- [ ] T003 Update `backend/app/services/tenant_service.py` — add `redis: aioredis.Redis` parameter to `delete_tenant`; forward it to `asyncio.create_task(purge_tenant(tenant_id, redis))` instead of the current no-arg call
+- [x] T00X Update `backend/app/api/routes/tenants.py` — in `DELETE /platform/tenants/{tenant_id}` handler, add `request: Request` parameter and pass `request.app.state.redis` when calling `tenant_service.delete_tenant`
+- [x] T00X Update `backend/app/services/tenant_service.py` — add `redis: aioredis.Redis` parameter to `delete_tenant`; forward it to `asyncio.create_task(purge_tenant(tenant_id, redis))` instead of the current no-arg call
 
 **Checkpoint**: `uv run python -m app.services.tenant_service` imports cleanly (no NameError); ruff passes.
 
@@ -35,10 +35,10 @@
 
 **Independent Test**: Call `purge_tenant` with a mock session and mock Redis. Assert DELETE was called for all 9 Postgres tables. Assert no SELECT was issued on content tables.
 
-- [ ] T004 [US1] Implement early-exit idempotency check in `backend/app/services/erasure_service.py` — open own `AsyncSession` via `get_session_factory()`, query tenant status; if already `deleted`, log and return immediately
-- [ ] T005 [US1] Implement Postgres purge in `backend/app/services/erasure_service.py` — DELETE from all 9 tenant-owned tables in FK-safe order: messages → escalations → leads → cms_chunks → conversations → widgets → cms_pages → guardrail_configs → cost_events. Wrap in try/except; log each table deleted. Do NOT delete audit_logs rows.
-- [ ] T006 [US1] Implement MinIO purge in `backend/app/services/erasure_service.py` — use `asyncio.get_event_loop().run_in_executor(None, ...)` to list and delete all objects under prefix `{tenant_id}/` in bucket `concierge-cms`. Read MinIO credentials from `get_settings()`. Handle bucket-not-found as no-op. Wrap in try/except.
-- [ ] T007 [US1] Implement Redis purge in `backend/app/services/erasure_service.py` — `async for key in redis.scan_iter(f"memory:{tenant_id}:*")`: collect keys and delete in batch. Wrap in try/except.
+- [x] T00X [US1] Implement early-exit idempotency check in `backend/app/services/erasure_service.py` — open own `AsyncSession` via `get_session_factory()`, query tenant status; if already `deleted`, log and return immediately
+- [x] T00X [US1] Implement Postgres purge in `backend/app/services/erasure_service.py` — DELETE from all 9 tenant-owned tables in FK-safe order: messages → escalations → leads → cms_chunks → conversations → widgets → cms_pages → guardrail_configs → cost_events. Wrap in try/except; log each table deleted. Do NOT delete audit_logs rows.
+- [x] T00X [US1] Implement MinIO purge in `backend/app/services/erasure_service.py` — use `asyncio.get_event_loop().run_in_executor(None, ...)` to list and delete all objects under prefix `{tenant_id}/` in bucket `concierge-cms`. Read MinIO credentials from `get_settings()`. Handle bucket-not-found as no-op. Wrap in try/except.
+- [x] T00X [US1] Implement Redis purge in `backend/app/services/erasure_service.py` — `async for key in redis.scan_iter(f"memory:{tenant_id}:*")`: collect keys and delete in batch. Wrap in try/except.
 
 **Checkpoint**: All purge steps present; no SELECT on content tables; `test_purge_deletes_all_postgres_tables` (written in Phase 5) passes.
 
@@ -50,8 +50,8 @@
 
 **Independent Test**: Mock MinIO to raise an exception. Call `purge_tenant`. Assert tenant status is NOT updated to `deleted`. Assert Postgres and Redis purge were still attempted.
 
-- [ ] T008 [US3] Add per-layer failure tracking in `backend/app/services/erasure_service.py` — after all three try/except blocks, check if any layer raised. If all succeeded: set tenant status → `deleted`. If any failed: log warning with layer name, leave status as `deleting`, and return without updating status.
-- [ ] T009 [US3] Verify idempotency of DELETE statements — confirm that a second call with an already-empty tenant (all rows gone) completes cleanly with no errors (DELETE WHERE affecting 0 rows is a no-op in Postgres; no additional guard needed).
+- [x] T00X [US3] Add per-layer failure tracking in `backend/app/services/erasure_service.py` — after all three try/except blocks, check if any layer raised. If all succeeded: set tenant status → `deleted`. If any failed: log warning with layer name, leave status as `deleting`, and return without updating status.
+- [x] T00X [US3] Verify idempotency of DELETE statements — confirm that a second call with an already-empty tenant (all rows gone) completes cleanly with no errors (DELETE WHERE affecting 0 rows is a no-op in Postgres; no additional guard needed).
 
 **Checkpoint**: `test_purge_stays_deleting_on_minio_failure` passes.
 
@@ -63,8 +63,8 @@
 
 **Independent Test**: Mock all storage layers to succeed. Call `purge_tenant`. Assert `audit_logs` received one INSERT with action=`"tenant_deleted"` and no message/email/CMS body content.
 
-- [ ] T010 [US4] Add compliance audit write in `backend/app/services/erasure_service.py` — after all storage layers succeed and before setting status=`deleted`: directly INSERT an `AuditLog` row via the open session with `actor_role="system"`, `action="tenant_deleted"`, `tenant_id=tenant_id`, `metadata_=None`. Do NOT use `write_audit_event` (fire-and-forget; timing not guaranteed). Commit the session.
-- [ ] T011 [US4] Set tenant status → `deleted` in `backend/app/services/erasure_service.py` — after the audit INSERT commits, update the tenant row: `UPDATE tenants SET status='deleted' WHERE id=tenant_id`.
+- [x] T01X [US4] Add compliance audit write in `backend/app/services/erasure_service.py` — after all storage layers succeed and before setting status=`deleted`: directly INSERT an `AuditLog` row via the open session with `actor_role="system"`, `action="tenant_deleted"`, `tenant_id=tenant_id`, `metadata_=None`. Do NOT use `write_audit_event` (fire-and-forget; timing not guaranteed). Commit the session.
+- [x] T01X [US4] Set tenant status → `deleted` in `backend/app/services/erasure_service.py` — after the audit INSERT commits, update the tenant row: `UPDATE tenants SET status='deleted' WHERE id=tenant_id`.
 
 **Checkpoint**: `test_purge_writes_audit_marker` and `test_purge_sets_status_deleted_on_success` pass.
 
@@ -74,7 +74,7 @@
 
 **Purpose**: Unit tests, lint, format, verify existing tests unbroken.
 
-- [ ] T012 Write `backend/tests/test_erasure_service.py` with 7 unit tests (all mock-only, no live DB):
+- [x] T01X Write `backend/tests/test_erasure_service.py` with 7 unit tests (all mock-only, no live DB):
   - `test_purge_deletes_all_postgres_tables` — mock session, assert DELETE called for all 9 tables in order
   - `test_purge_skips_if_already_deleted` — mock tenant status=deleted, assert no DELETEs issued
   - `test_purge_clears_redis_keys` — mock scan_iter returns 2 keys, assert delete called
@@ -82,10 +82,10 @@
   - `test_purge_stays_deleting_on_minio_failure` — MinIO raises, assert status NOT set to `deleted`
   - `test_purge_writes_audit_marker` — assert AuditLog INSERT with action=`tenant_deleted`, no content fields
   - `test_purge_idempotent_no_rows` — all DELETEs affect 0 rows, no exception raised
-- [ ] T013 Run `uv run ruff check .` from `backend/` and fix any errors in new/modified files
-- [ ] T014 Run `uv run black .` from `backend/` to format new files
-- [ ] T015 Run `uv run pytest tests/test_erasure_service.py -v` — all 7 tests pass
-- [ ] T016 Run `uv run pytest tests/test_tenant_provisioning.py -v` — existing tenant tests still pass (no regressions from tenant_service changes)
+- [x] T01X Run `uv run ruff check .` from `backend/` and fix any errors in new/modified files
+- [x] T01X Run `uv run black .` from `backend/` to format new files
+- [x] T01X Run `uv run pytest tests/test_erasure_service.py -v` — all 7 tests pass
+- [x] T01X Run `uv run pytest tests/test_tenant_provisioning.py -v` — existing tenant tests still pass (no regressions from tenant_service changes)
 
 ---
 
