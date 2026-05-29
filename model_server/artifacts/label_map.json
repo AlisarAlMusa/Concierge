@@ -1,0 +1,22 @@
+{
+  "_comment": "Maps the trained classifier's data labels (4 classes from training: faq, sales, spam, support) to the platform's 5 routing intents (spam, faq_support, sales_contact, human_request, ambiguous). Any data label not present here defaults to 'ambiguous'. human_request is reached via guardrails escalation, not classifier output.",
+  "routing": {
+    "spam": "spam",
+    "faq": "faq_support",
+    "support": "faq_support",
+    "sales": "sales_contact"
+  },
+  "routing_intents": [
+    "spam",
+    "faq_support",
+    "sales_contact",
+    "human_request",
+    "ambiguous"
+  ],
+  "data_classes_alphabetical": [
+    "faq",
+    "sales",
+    "spam",
+    "support"
+  ]
+}

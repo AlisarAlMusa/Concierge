@@ -15,8 +15,15 @@ build/
 
 # ML artifacts (committed only if small — use model card SHA check)
 *.onnx
+*.onnx.data
 *.joblib
 *.pkl
+*.npy
+# Large CSV training/eval data — stays out of git; SHA-256 in model card is the contract.
+model_server/artifacts/data/
+
+# Windows alternate data streams (WSL clone noise)
+*:Zone.Identifier
 
 # Node
 node_modules/
@@ -43,3 +50,9 @@ htmlcov/
 
 #agent
 .claude/
+
+# Eval artifacts — committed: golden_set.json + golden_set.sha256.
+# Not committed: per-run report and LLM response cache (provider keys + costs
+# vary across machines; cache rebuilds itself on first hit).
+evals/classifier/last_report.json
+evals/classifier/.cache/

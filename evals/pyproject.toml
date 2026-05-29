@@ -1,0 +1,27 @@
+[project]
+name = "concierge-evals"
+version = "0.1.0"
+description = "Offline evaluation harness for the Concierge classifier (spec 007 US5)."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "joblib>=1.4",
+    "onnxruntime>=1.18",
+    "PyYAML>=6.0",
+    "groq>=0.9.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "pytest>=8.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["classifier*", "agent*", "rag*", "security*"]
+exclude = ["tests*", "*/__pycache__"]

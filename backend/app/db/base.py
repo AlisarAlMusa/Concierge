@@ -15,8 +15,7 @@ class Base(DeclarativeBase):
 # them. The ``import app.models.X`` form (rather than ``from … import X``)
 # is intentional — it tolerates being re-entered mid-way through another
 # model's import without raising ``ImportError`` on a partially-defined
-# class. See ``models/user.py`` → ``db/base.py`` → ``models/user.py``
-# cycle that ``app.dependencies`` triggers on import.
+# class.
 import app.models.audit_log  # noqa: F401, E402
 import app.models.chunk  # noqa: F401, E402
 import app.models.cms  # noqa: F401, E402
