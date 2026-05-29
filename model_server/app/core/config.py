@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # Secret — populated from Vault when APP_ENV != "local".
     SERVICE_AUTH_SECRET: str = ""
 
+    # Artifacts (spec 007). `/app/artifacts` matches the container working dir;
+    # `model_server/artifacts` is used by host-side tests.
+    ARTIFACTS_DIR: str = "artifacts"
+
+    # Cohere embedder (matches backend/app/services/embedding_client.py provider).
+    # 1024-dim `embed-english-v3.0` aligns with the trained models' input dim.
+    COHERE_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "embed-english-v3.0"
+
 
 @lru_cache
 def get_settings() -> Settings:

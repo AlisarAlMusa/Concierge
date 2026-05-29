@@ -1,0 +1,11 @@
+{
+    "task_name": "Intent Classification (Neural Network)",
+    "model_type": "PyTorch FFN exported to ONNX",
+    "metrics": {
+        "macro_f1": 0.9287580296541449,
+        "accuracy": 0.9375
+    },
+    "artifact_sha256": "3dae42f9a45094ef5b166fc3489927ad0a4da45a9957b0cadc23a0c5cb2ab1c7",
+    "input_dim": 1024,
+    "num_classes": 4
+}

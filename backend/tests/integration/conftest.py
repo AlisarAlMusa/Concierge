@@ -104,7 +104,17 @@ def _load_sidecar_app(name: str, sidecar_root: Path) -> FastAPI:
 
 @pytest.fixture()
 def model_server_app() -> FastAPI:
-    return _load_sidecar_app("model_server", REPO_ROOT / "model_server")
+    # `model_server` now imports `joblib`, `onnxruntime`, `cohere` at startup
+    # (spec 007). The backend's venv does not (and should not) ship those —
+    # constitution V keeps the API image lean. Skip cleanly when the deps are
+    # absent; model_server's own tests cover its routes end-to-end.
+    try:
+        return _load_sidecar_app("model_server", REPO_ROOT / "model_server")
+    except ModuleNotFoundError as exc:
+        pytest.skip(
+            f"model_server deps not installed in backend venv ({exc.name}); "
+            f"run model_server's own test suite for endpoint coverage"
+        )
 
 
 @pytest.fixture()

@@ -443,6 +443,8 @@ The route intentionally does **not** flip the parent `Conversation.status`
 back to `active` on resolve — that side effect needs explicit product
 design and is out of this PR's scope.
 
+## CMS edit lifecycle (Owner B, Spec 005)
+
 ### Edit, unpublish, delete, and reindex (Spec 005 FR-004 → FR-008)
 
 The CMS surface exposes the full edit lifecycle. All routes share the
