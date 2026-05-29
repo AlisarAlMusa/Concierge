@@ -67,6 +67,11 @@ class WidgetService:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def list_by_tenant(self, tenant_id: UUID) -> list[Widget]:
+        """Return all widgets (enabled or not) for a tenant admin listing."""
+        stmt = select(Widget).where(Widget.tenant_id == tenant_id).order_by(Widget.name)
+        return list((await self._session.execute(stmt)).scalars().all())
+
     @staticmethod
     def validate_origin(widget: Widget, origin: str | None) -> bool:
         """``True`` iff ``origin`` is in the widget's allowed list.

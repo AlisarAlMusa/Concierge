@@ -158,5 +158,5 @@ Docker Compose → health endpoint → DB connection → Alembic → tenant mode
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at `specs/015-tenant-erasure/plan.md`.
+at `specs/019-public-tenant-site/plan.md`.
 <!-- SPECKIT END -->

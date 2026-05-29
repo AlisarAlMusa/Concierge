@@ -32,6 +32,7 @@ log = structlog.get_logger(__name__)
 # Cost estimation
 # ---------------------------------------------------------------------------
 
+
 def _estimate_cost(
     provider: str,
     input_tokens: int,
@@ -62,6 +63,7 @@ def _estimate_cost(
 # ---------------------------------------------------------------------------
 # Inner async coroutines
 # ---------------------------------------------------------------------------
+
 
 async def _write_cost_event(
     *,
@@ -101,6 +103,7 @@ async def _write_cost_event(
 # Public fire-and-forget entry point
 # ---------------------------------------------------------------------------
 
+
 def record_event(
     *,
     tenant_id: UUID,
@@ -131,6 +134,7 @@ def record_event(
 # ---------------------------------------------------------------------------
 # Usage summary (awaitable — used by API routes)
 # ---------------------------------------------------------------------------
+
 
 async def get_tenant_usage_summary(
     session,  # AsyncSession — typed loosely to avoid import cycle

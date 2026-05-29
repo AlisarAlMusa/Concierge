@@ -1,18 +1,7 @@
 """Admin escalations routes — ``GET /escalations`` + ``PATCH /escalations/{id}``.
 
-Authoring surface for tenant admins (Spec 012 FR-010 / FR-011). The
-``escalate`` agent tool writes escalations via ``EscalationService.create``
-from the widget-token path; this router is the *admin* surface and never
-creates escalations itself. Per the Spec 012 Assumptions, the admin
-surface intentionally does not expose DELETE — escalation removal happens
-through the tenant erasure flow (feature 015).
-
-Authentication (transitional, mirrors ``/cms`` and ``/leads`` exactly):
-
-1. ``X-Service-Token`` — shared secret from ``Settings.SERVICE_AUTH_SECRET``.
-2. ``X-Tenant-Id`` — the tenant the caller is operating on.
-
-Owner: Person B.
+JWT-authenticated via require_tenant_admin. Tenant id is derived from the
+verified user — never from the request body (CLAUDE.md rule 5).
 """
 
 from __future__ import annotations
@@ -22,18 +11,17 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.security import require_service_token
-from app.dependencies import get_admin_escalation_service, get_admin_tenant_id
+from app.dependencies import get_jwt_escalation_service, require_tenant_admin
+from app.models.user import User
 from app.schemas.escalation import EscalationList, EscalationRead, EscalationUpdate
 from app.services.escalation_service import EscalationService
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(tags=["escalations"], dependencies=[Depends(require_service_token)])
+router = APIRouter(tags=["escalations"])
 
 
 def _to_read(escalation) -> EscalationRead:
-    """Build the public response from an ORM row."""
     return EscalationRead.model_validate(escalation)
 
 
@@ -47,16 +35,17 @@ def _not_found() -> HTTPException:
 @router.get(
     "",
     response_model=EscalationList,
-    summary="List escalations for the caller's tenant (newest first)",
+    summary="List escalations for the calling tenant (newest first)",
 )
 async def list_escalations(
-    tenant_id: UUID = Depends(get_admin_tenant_id),
-    service: EscalationService = Depends(get_admin_escalation_service),
+    current_user: User = Depends(require_tenant_admin),
+    service: EscalationService = Depends(get_jwt_escalation_service),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> EscalationList:
-    """Paginated list. Spec 012 FR-010 + SC-004."""
-    items, total = await service.list_escalations(tenant_id=tenant_id, limit=limit, offset=offset)
+    items, total = await service.list_escalations(
+        tenant_id=current_user.tenant_id, limit=limit, offset=offset
+    )
     return EscalationList(items=[_to_read(escalation) for escalation in items], total=total)
 
 
@@ -68,12 +57,11 @@ async def list_escalations(
 async def patch_escalation(
     escalation_id: UUID,
     payload: EscalationUpdate,
-    tenant_id: UUID = Depends(get_admin_tenant_id),
-    service: EscalationService = Depends(get_admin_escalation_service),
+    current_user: User = Depends(require_tenant_admin),
+    service: EscalationService = Depends(get_jwt_escalation_service),
 ) -> EscalationRead:
-    """Status transition (Spec 012 FR-011)."""
     escalation = await service.update_escalation(
-        tenant_id=tenant_id,
+        tenant_id=current_user.tenant_id,
         escalation_id=escalation_id,
         status=payload.status,
     )

@@ -433,9 +433,7 @@ def test_public_config_does_not_leak_allowed_origins(
     token_service: WidgetTokenService,
 ) -> None:
     """``allowed_origins`` is server-side enforcement state — never returned."""
-    headers = _bearer(
-        token_service, tenant_id=fake_widget.tenant_id, widget_id=fake_widget.id
-    )
+    headers = _bearer(token_service, tenant_id=fake_widget.tenant_id, widget_id=fake_widget.id)
     response = client.get("/public/widgets/config", headers=headers)
     assert response.status_code == 200
     assert "allowed_origins" not in response.json()
@@ -460,9 +458,7 @@ def test_public_config_disabled_widget_returns_404(
     token_service: WidgetTokenService,
 ) -> None:
     fake_widget.enabled = False
-    headers = _bearer(
-        token_service, tenant_id=fake_widget.tenant_id, widget_id=fake_widget.id
-    )
+    headers = _bearer(token_service, tenant_id=fake_widget.tenant_id, widget_id=fake_widget.id)
     response = client.get("/public/widgets/config", headers=headers)
     assert response.status_code == 404
 

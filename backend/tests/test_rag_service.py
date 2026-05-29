@@ -286,9 +286,9 @@ async def test_search_with_published_only_false_skips_join():
     assert len(session.executed) == 1
     sql = _compiled_sql(session.executed[0])
     assert "cms_chunks" in sql
-    assert "cms_pages" not in sql, (
-        "published_only=False must not JOIN cms_pages — the eval baseline relies on this"
-    )
+    assert (
+        "cms_pages" not in sql
+    ), "published_only=False must not JOIN cms_pages — the eval baseline relies on this"
 
 
 # ----- index_page -----------------------------------------------------------

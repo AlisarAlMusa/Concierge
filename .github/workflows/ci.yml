@@ -12,25 +12,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Install backend dependencies
         working-directory: backend
-        run: uv pip install --system -e ".[dev]"
+        run: uv sync --group dev
 
       - name: Lint (ruff)
         working-directory: backend
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Format check (black)
         working-directory: backend
-        run: black --check .
+        run: uv run black --check .
 
       - name: No direct getenv for service auth (spec 018 SC-003)
         run: |
@@ -44,15 +39,21 @@ jobs:
 
       - name: Unit and integration tests
         working-directory: backend
-        run: pytest tests/ -x --tb=short || true
-        # 'true' until eval-gate tests land; service-auth + redaction tests are real.
+        run: uv run pytest tests/ -x --tb=short
 
-  smoke-test:
+  smoke-and-evals:
     runs-on: ubuntu-latest
     needs: lint-and-test
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --group dev
 
       - name: Copy env
         run: cp .env.example .env
@@ -74,6 +75,8 @@ jobs:
           docker compose logs api
           exit 1
 
+      # ── Smoke test: verify all service health endpoints ──────────────────
+
       - name: Verify /health returns ok
         run: |
           RESPONSE=$(curl -sf http://localhost:8000/health)
@@ -86,23 +89,40 @@ jobs:
           echo "$RESPONSE"
           echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ready', d"
 
+      - name: Verify model_server /health returns ok
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8001/health)
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok', d"
+
+      - name: Verify guardrails_sidecar /health returns ok
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8002/health)
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='ok', d"
+
+      # ── Eval gates: each gate is a separate named step ───────────────────
+      # Stack is running above — eval scripts that need live DB can connect.
+      # Person C implements the eval scripts; this job wires them into CI.
+      # Any gate that exits non-zero blocks the merge (no continue-on-error).
+
+      - name: Classifier eval gate
+        run: bash scripts/run_evals.sh classifier
+
+      - name: RAG eval gate
+        run: bash scripts/run_evals.sh rag
+
+      - name: Agent tool-selection gate
+        run: bash scripts/run_evals.sh agent
+
+      - name: Red-team gate
+        run: bash scripts/run_evals.sh security
+
+      - name: Redaction gate
+        run: bash scripts/run_evals.sh redaction
+
+      # ── Teardown ─────────────────────────────────────────────────────────
+
       - name: Tear down
         if: always()
         run: docker compose down -v
-
-  # TODO: Person C wires these gates after eval scripts are implemented
-  # eval-gates:
-  #   runs-on: ubuntu-latest
-  #   needs: smoke-test
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Classifier eval gate
-  #       run: bash scripts/run_evals.sh classifier
-  #     - name: RAG eval gate
-  #       run: bash scripts/run_evals.sh rag
-  #     - name: Agent tool-selection gate
-  #       run: bash scripts/run_evals.sh agent
-  #     - name: Red-team gate
-  #       run: bash scripts/run_evals.sh security
-  #     - name: Redaction gate
-  #       run: bash scripts/run_evals.sh redaction

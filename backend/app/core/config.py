@@ -87,14 +87,14 @@ class Settings(BaseSettings):
 
     # Chat rate limits (Spec 013 FR-007, FR-008). Fixed-window counters in Redis.
     # CHAT_RATE_LIMIT_WINDOW_SECONDS is the shared window for both scopes.
-    CHAT_RATE_LIMIT_PER_TENANT: int = 100   # requests/window/tenant
-    CHAT_RATE_LIMIT_PER_WIDGET: int = 60    # requests/window/widget
+    CHAT_RATE_LIMIT_PER_TENANT: int = 100  # requests/window/tenant
+    CHAT_RATE_LIMIT_PER_WIDGET: int = 60  # requests/window/widget
     CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
 
     # Static cost-per-token pricing table, USD (Spec 013 assumption).
     # Self-hosted services (classifier, rerank) are priced at zero.
-    COST_GROQ_INPUT_PER_TOKEN: float = 0.0000003    # ~$0.30/1M
-    COST_GROQ_OUTPUT_PER_TOKEN: float = 0.0000005   # ~$0.50/1M
+    COST_GROQ_INPUT_PER_TOKEN: float = 0.0000003  # ~$0.30/1M
+    COST_GROQ_OUTPUT_PER_TOKEN: float = 0.0000005  # ~$0.50/1M
     COST_COHERE_INPUT_PER_TOKEN: float = 0.0000002  # ~$0.20/1M (embed only)
 
 

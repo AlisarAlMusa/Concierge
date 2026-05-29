@@ -75,6 +75,21 @@ from app.services.workflows import (
     SalesWorkflow,
 )
 
+
+class _NullEmbeddingClient:
+    """Placeholder when COHERE_API_KEY is not set.
+
+    Satisfies the EmbeddingClient protocol so CmsPageService can be
+    constructed for read/delete operations. Raises ExternalServiceError if
+    embedding is actually attempted (create/update/reindex will fail clearly).
+    """
+
+    async def embed_query(self, text: str) -> list[float]:
+        raise ExternalServiceError(service="cohere", reason="COHERE_API_KEY not configured")
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        raise ExternalServiceError(service="cohere", reason="COHERE_API_KEY not configured")
+
 log = structlog.get_logger(__name__)
 
 
@@ -195,9 +210,7 @@ async def require_tenant_admin(
             detail="User has no tenant_id – data integrity error",
         )
 
-    result = await session.execute(
-        select(Tenant).where(Tenant.id == user.tenant_id)
-    )
+    result = await session.execute(select(Tenant).where(Tenant.id == user.tenant_id))
 
     tenant = result.scalar_one_or_none()
 
@@ -212,8 +225,13 @@ async def require_tenant_admin(
 
     try:
         yield user
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     finally:
         await reset_tenant_context(session)
+
 
 # ----- Process-singleton infrastructure clients ------------------------------
 @lru_cache(maxsize=1)
@@ -532,6 +550,48 @@ def get_cms_page_service(
     return CmsPageService(session=session, rag_service=rag_service)
 
 
+def get_jwt_lead_service(
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+) -> LeadService:
+    """LeadService for JWT-authenticated admin /leads routes.
+
+    Uses get_db_session shared with require_tenant_admin so the RLS context
+    is already set and writes commit via the require_tenant_admin finally block.
+    """
+    return LeadService(session=session, settings=settings)
+
+
+def get_jwt_escalation_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> EscalationService:
+    """EscalationService for JWT-authenticated admin /escalations routes.
+
+    Uses get_db_session shared with require_tenant_admin so the RLS context
+    is already set. ConversationService shares the same session instance.
+    """
+    conversations = ConversationService(session=session)
+    return EscalationService(session=session, conversation_service=conversations)
+
+
+def get_admin_cms_rag_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> RagService:
+    """RagService for JWT-authenticated admin CMS routes.
+
+    Uses the same get_db_session instance as require_tenant_admin — FastAPI
+    deduplication ensures they share a session so the RLS context set by
+    require_tenant_admin is visible here.  Falls back to a null embedding
+    client when COHERE_API_KEY is absent so list/read/delete routes still
+    work (embedding-dependent operations will fail clearly at call time).
+    """
+    try:
+        embedding_client = _get_embedding_client_singleton()
+    except ExternalServiceError:
+        embedding_client = _NullEmbeddingClient()
+    return RagService(session=session, embedding_client=embedding_client)  # type: ignore[arg-type]
+
+
 def get_admin_conversation_service(
     session: AsyncSession = Depends(get_admin_rls_session),
 ) -> ConversationService:
@@ -571,12 +631,24 @@ def get_admin_escalation_service(
     """
     return EscalationService(session=session, conversation_service=conversations)
 
+
 def get_widget_service(
     session: AsyncSession = Depends(get_plain_db_session),
 ) -> WidgetService:
     """Widget lookup. NOT RLS-scoped — token issuance happens before the
     request has an authenticated ``tenant_id``. The ``widgets`` RLS policy
     permits reads when ``app.tenant_id`` is unset; see migration 0003.
+    """
+    return WidgetService(session=session)
+
+
+def get_admin_widget_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> WidgetService:
+    """WidgetService for JWT-authenticated admin widget listing.
+
+    Uses get_db_session shared with require_tenant_admin so the RLS
+    context is set and the session commits via require_tenant_admin.
     """
     return WidgetService(session=session)
 

@@ -18,8 +18,9 @@ try:
         config = client.get_tenant_config()
 except APIError as exc:
     if exc.status_code == 401:
+        st.warning("Session expired. Please log in again.")
         st.session_state.clear()
-        st.switch_page("app.py")
+        st.rerun()
         st.stop()
     st.error(str(exc))
     config = {}
@@ -116,10 +117,4 @@ if save:
             )
         st.success("Config saved.")
     except APIError as exc:
-        if exc.status_code in (404, 405, 501):
-            st.warning(
-                "Agent config endpoint not yet available (Person C's scope). "
-                "Your changes were not persisted."
-            )
-        else:
-            st.error(str(exc))
+        st.error(str(exc))

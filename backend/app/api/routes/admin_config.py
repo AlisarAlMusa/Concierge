@@ -1,16 +1,21 @@
-"""Tenant admin config routes — accessible only by tenant_admin.
+"""Tenant admin config routes — GET/PATCH /tenant/config, GET /tenant/usage-summary.
 
-Tenant context (RLS) is set automatically by require_tenant_admin.
-tenant_manager → 403.  member → 403.  unauthenticated → 401.
+tenant_id is always derived from the authenticated user's JWT, never from the
+request body (CLAUDE.md non-negotiable rule 5).
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
 from app.dependencies import require_tenant_admin
+from app.models.tenant_config import TenantConfig
 from app.models.user import User
 from app.repositories import tenant_repository
 from app.schemas.guardrails import GuardrailsConfigRead, GuardrailsConfigUpdate
@@ -19,30 +24,94 @@ from app.services import cost_service
 
 router = APIRouter(tags=["admin_config"])
 
+_DEFAULT_TOOLS = ["rag_search", "capture_lead", "escalate"]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GET /tenant/config  (stub — Person A Day 3)
-# ──────────────────────────────────────────────────────────────────────────────
+
+class TenantConfigRead(BaseModel):
+    tenant_id: str
+    persona: str
+    refusal_tone: str
+    enabled_tools: list[str]
+    allowed_topics: list[str]
+    blocked_topics: list[str]
+
+
+class TenantConfigUpdate(BaseModel):
+    persona: str | None = None
+    refusal_tone: str | None = None
+    enabled_tools: list[str] | None = None
+    allowed_topics: list[str] | None = None
+    blocked_topics: list[str] | None = None
+
+
+def _row_to_read(cfg: TenantConfig | None, tenant_id: Any) -> TenantConfigRead:
+    if cfg is None:
+        return TenantConfigRead(
+            tenant_id=str(tenant_id),
+            persona="",
+            refusal_tone="polite",
+            enabled_tools=_DEFAULT_TOOLS,
+            allowed_topics=[],
+            blocked_topics=[],
+        )
+    return TenantConfigRead(
+        tenant_id=str(tenant_id),
+        persona=cfg.persona or "",
+        refusal_tone=cfg.refusal_tone or "polite",
+        enabled_tools=cfg.enabled_tools if cfg.enabled_tools is not None else _DEFAULT_TOOLS,
+        allowed_topics=cfg.allowed_topics or [],
+        blocked_topics=cfg.blocked_topics or [],
+    )
 
 
 @router.get(
     "/config",
-    summary="Get tenant configuration (tenant_admin only)",
+    response_model=TenantConfigRead,
+    summary="Get tenant agent/guardrail configuration (tenant_admin only)",
 )
 async def get_tenant_config(
     current_user: User = Depends(require_tenant_admin),
-):
-    """Return tenant configuration.  Stub — returns empty dict for now.
+    session: AsyncSession = Depends(get_db_session),
+) -> TenantConfigRead:
+    result = await session.execute(
+        select(TenantConfig).where(TenantConfig.tenant_id == current_user.tenant_id)
+    )
+    cfg = result.scalar_one_or_none()
+    return _row_to_read(cfg, current_user.tenant_id)
 
-    tenant_id is derived from current_user.tenant_id (never from body).
-    RLS context is set by require_tenant_admin before this handler runs.
-    """
-    return {"tenant_id": str(current_user.tenant_id), "config": {}}
 
+@router.patch(
+    "/config",
+    response_model=TenantConfigRead,
+    summary="Update tenant agent/guardrail configuration (tenant_admin only)",
+)
+async def patch_tenant_config(
+    payload: TenantConfigUpdate,
+    current_user: User = Depends(require_tenant_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> TenantConfigRead:
+    result = await session.execute(
+        select(TenantConfig).where(TenantConfig.tenant_id == current_user.tenant_id)
+    )
+    cfg = result.scalar_one_or_none()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GET /tenant/usage-summary  (Spec 013 FR-005)
-# ──────────────────────────────────────────────────────────────────────────────
+    if cfg is None:
+        cfg = TenantConfig(tenant_id=current_user.tenant_id)
+        session.add(cfg)
+
+    if payload.persona is not None:
+        cfg.persona = payload.persona
+    if payload.refusal_tone is not None:
+        cfg.refusal_tone = payload.refusal_tone
+    if payload.enabled_tools is not None:
+        cfg.enabled_tools = payload.enabled_tools
+    if payload.allowed_topics is not None:
+        cfg.allowed_topics = payload.allowed_topics
+    if payload.blocked_topics is not None:
+        cfg.blocked_topics = payload.blocked_topics
+
+    await session.flush()
+    return _row_to_read(cfg, current_user.tenant_id)
 
 
 @router.get(
@@ -54,18 +123,6 @@ async def get_tenant_usage_summary(
     current_user: User = Depends(require_tenant_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> TenantUsageSummary:
-    """Return aggregate cost metrics for the calling tenant.
-
-    tenant_id is derived from the authenticated user's JWT — never from the
-    request body (CLAUDE.md non-negotiable rule 5).
-
-    The session shared with require_tenant_admin already has app.tenant_id RLS
-    context set, so the DB-level policy provides a second enforcement layer on
-    top of the explicit tenant_id filter inside cost_service.get_tenant_usage_summary.
-
-    Returns numeric aggregates only — no conversation content, lead records, or
-    CMS body text (Spec 013 SC-005).
-    """
     summary = await cost_service.get_tenant_usage_summary(session, current_user.tenant_id)
     return TenantUsageSummary(
         tenant_id=summary["tenant_id"],

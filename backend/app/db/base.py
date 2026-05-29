@@ -25,5 +25,6 @@ import app.models.escalation  # noqa: F401, E402
 import app.models.guardrail_config  # noqa: F401, E402
 import app.models.lead  # noqa: F401, E402
 import app.models.tenant  # noqa: F401, E402
+import app.models.tenant_config  # noqa: F401, E402
 import app.models.user  # noqa: F401, E402
 import app.models.widget  # noqa: F401, E402

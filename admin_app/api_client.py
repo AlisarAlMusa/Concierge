@@ -34,7 +34,7 @@ class APIClient:
     def _request(self, method: str, path: str, **kwargs):
         url = f"{self._base_url}{path}"
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
                 resp = client.request(method, url, headers=self._headers(), **kwargs)
             resp.raise_for_status()
             if resp.status_code == 204 or not resp.content:
@@ -76,7 +76,9 @@ class APIClient:
 
     def list_cms_pages(self) -> list[dict]:
         try:
-            result = self._request("GET", "/cms/")
+            result = self._request("GET", "/tenant/cms/")
+            if isinstance(result, dict):
+                return result.get("items", [])
             return result or []
         except APIError as exc:
             if exc.status_code == 404:
@@ -84,19 +86,19 @@ class APIClient:
             raise
 
     def get_cms_page(self, page_id: str) -> dict:
-        return self._request("GET", f"/cms/{page_id}")
+        return self._request("GET", f"/tenant/cms/{page_id}")
 
     def create_cms_page(self, title: str, body: str, slug: str, status: str = "draft") -> dict:
         return self._request(
-            "POST", "/cms/", json={"title": title, "body": body, "slug": slug, "status": status}
+            "POST", "/tenant/cms/", json={"title": title, "body": body, "slug": slug, "status": status}
         )
 
     def update_cms_page(self, page_id: str, **fields) -> dict:
-        return self._request("PUT", f"/cms/{page_id}", json=fields)
+        return self._request("PUT", f"/tenant/cms/{page_id}", json=fields)
 
     def delete_cms_page(self, page_id: str) -> None:
         try:
-            self._request("DELETE", f"/cms/{page_id}")
+            self._request("DELETE", f"/tenant/cms/{page_id}")
         except APIError as exc:
             if exc.status_code == 404:
                 return
@@ -104,7 +106,7 @@ class APIClient:
 
     def reindex_cms_page(self, page_id: str) -> None:
         try:
-            self._request("POST", f"/cms/{page_id}/reindex")
+            self._request("POST", f"/tenant/cms/{page_id}/reindex")
         except APIError as exc:
             if exc.status_code == 404:
                 raise APIError("Reindex endpoint not yet available.", 404) from exc
@@ -132,7 +134,7 @@ class APIClient:
         try:
             return self._request("GET", "/leads/", params=params) or []
         except APIError as exc:
-            if exc.status_code == 404:
+            if exc.status_code in (404, 403):
                 return []
             raise
 
@@ -151,7 +153,7 @@ class APIClient:
         try:
             return self._request("GET", "/escalations/", params=params) or []
         except APIError as exc:
-            if exc.status_code == 404:
+            if exc.status_code in (404, 403):
                 return []
             raise
 
@@ -206,7 +208,7 @@ def get_client() -> APIClient:
 def require_auth(allowed_roles: list[str] | None = None) -> None:
     """Page guard — redirect to login if unauthenticated or wrong role."""
     if not st.session_state.get("token"):
-        st.switch_page("app.py")
+        st.session_state.clear(); st.rerun()
         st.stop()
     if allowed_roles and st.session_state.get("user_role") not in allowed_roles:
         st.error("You do not have permission to view this page.")
