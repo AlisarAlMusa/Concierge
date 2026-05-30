@@ -16,11 +16,9 @@ from typing import Literal
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-
-from app.core.redaction import redact
 
 logger = structlog.get_logger(__name__)
 
@@ -28,15 +26,32 @@ Role = Literal["visitor", "assistant", "tool"]
 
 
 class MemoryEntry(BaseModel):
-    """One redacted turn in a conversation's short-term memory window.
+    """One turn in a conversation's short-term memory window.
 
     The shape is deliberately small; tool arguments and tool results are
     NOT stored. Identity (tenant_id, conversation_id) lives in the Redis
     key, never in the value.
+
+    ``content`` holds the original visitor/assistant text so the LLM sees
+    real conversation context on subsequent turns (e.g. a real business
+    email rather than ``[REDACTED_EMAIL]``). Log-grade redaction is applied
+    at the structlog / OpenTelemetry layers, and the durable
+    ``messages.content_redacted`` SQL column continues to be redacted by
+    ``ChatOrchestrator`` before write — those compliance paths are
+    independent of this Redis-only short-term cache.
+
+    ``validation_alias`` accepts the legacy ``content_redacted`` JSON key
+    so already-cached Redis entries from before this change still load
+    (they fade naturally via the sliding TTL).
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     role: Role
-    content_redacted: str
+    content: str = Field(
+        ...,
+        validation_alias=AliasChoices("content", "content_redacted"),
+    )
     ts: int
 
 
@@ -53,7 +68,11 @@ class MemoryService:
     """Redis-backed short-term conversational memory.
 
     Invariants:
-      - Every value passed to append() is run through redact() before write.
+      - Values passed to append() are stored verbatim so the LLM receives
+        the original conversation context on subsequent turns. PII / secret
+        redaction for *logs, spans, and durable DB writes* happens in the
+        respective sinks (``app.core.tracing`` / structlog processors /
+        ``ChatOrchestrator``'s DB write path), independent of this cache.
       - LTRIM keeps the list bounded to max_entries on every append.
       - EXPIRE refreshes the TTL on every append (sliding window).
       - Redis errors fail OPEN: load() returns []; append/purge log + return.
@@ -78,10 +97,10 @@ class MemoryService:
         role: Role,
         content: str,
     ) -> None:
-        """Append one redacted entry to the conversation window."""
+        """Append one entry to the conversation window (original content)."""
         entry = MemoryEntry(
             role=role,
-            content_redacted=redact(content),
+            content=content,
             ts=int(time.time()),
         )
         key = _key(tenant_id, conversation_id)

@@ -370,7 +370,13 @@ async def test_input_guardrail_block_short_circuits_router_and_agent():
     assert memory.appended == []
 
 
-async def test_output_guardrail_redacted_text_is_used_in_reply_and_memory():
+async def test_output_guardrail_redacted_text_never_reaches_user_or_memory():
+    """The output guardrail's ``redacted_text`` is a log-grade scrub and must
+    never be the visitor-visible reply nor the value persisted to short-term
+    memory (subsequent LLM turns must see the original conversation context).
+    The durable ``messages.content_redacted`` SQL column stays redacted via
+    ``ChatOrchestrator``'s own ``redact()`` call on the way out — that's a
+    separate compliance lane and is exercised by ``test_persistence.py``."""
     orch, _, _, memory, _ = _build(
         decision=RouteDecision(path="agent", reason="ambiguous"),
         agent_result=_agent_turn(reply="raw assistant text"),
@@ -379,16 +385,18 @@ async def test_output_guardrail_redacted_text_is_used_in_reply_and_memory():
 
     turn = await orch.handle_turn(tenant_id=TENANT, user_message="hello")
 
-    assert turn.reply == "[REDACTED_OUT]"
-    # The router gets the redacted-input version of the visitor's message.
+    # Visitor sees the original assistant reply, NOT ``[REDACTED_OUT]``.
+    assert turn.reply == "raw assistant text"
+    # Short-term memory stores raw visitor + raw assistant content so the
+    # LLM sees real context (e.g. business emails) on later turns.
     visitor_entry = memory.appended[0]
     assistant_entry = memory.appended[1]
-    assert visitor_entry == (TENANT, turn.conversation_id, "visitor", "[REDACTED_IN]")
+    assert visitor_entry == (TENANT, turn.conversation_id, "visitor", "hello")
     assert assistant_entry == (
         TENANT,
         turn.conversation_id,
         "assistant",
-        "[REDACTED_OUT]",
+        "raw assistant text",
     )
 
 
