@@ -176,6 +176,37 @@ class APIClient:
                 return []
             raise
 
+    def create_widget(
+        self,
+        name: str,
+        allowed_origins: list[str],
+        greeting: str = "",
+        theme: dict | None = None,
+        enabled: bool = True,
+    ) -> dict:
+        payload: dict = {
+            "name": name,
+            "allowed_origins": allowed_origins,
+            "greeting": greeting,
+            "theme": theme or {},
+            "enabled": enabled,
+        }
+        return self._request("POST", "/widgets/", json=payload)
+
+    def update_widget(self, widget_id: str, **fields) -> dict:
+        """PATCH a widget. Only keys present in ``fields`` are sent so the
+        backend's ``exclude_unset`` policy preserves untouched values."""
+        payload = {k: v for k, v in fields.items() if v is not None}
+        return self._request("PATCH", f"/widgets/{widget_id}", json=payload)
+
+    def delete_widget(self, widget_id: str) -> None:
+        try:
+            self._request("DELETE", f"/widgets/{widget_id}")
+        except APIError as exc:
+            if exc.status_code == 404:
+                return
+            raise
+
     # ── Usage summary (tenant admin) ──────────────────────────────────────────
 
     def get_usage_summary(self) -> dict:
@@ -190,6 +221,42 @@ class APIClient:
 
     def list_tenants(self) -> list[dict]:
         return self._request("GET", "/platform/tenants/") or []
+
+    def create_tenant(
+        self,
+        name: str,
+        slug: str,
+        contact_email: str | None = None,
+        description: str | None = None,
+    ) -> dict:
+        payload: dict = {"name": name, "slug": slug}
+        if contact_email:
+            payload["contact_email"] = contact_email
+        if description:
+            payload["description"] = description
+        return self._request("POST", "/platform/tenants/", json=payload)
+
+    def invite_admin(self, tenant_id: str, email: str) -> dict:
+        """Create a tenant_admin for ``tenant_id``.
+
+        Returns the new user payload (id, email, role, tenant_id) plus a
+        one-time ``temporary_password`` the caller is expected to show
+        exactly once and never persist client-side.
+        """
+        return self._request(
+            "POST",
+            f"/platform/tenants/{tenant_id}/invite-admin",
+            json={"email": email},
+        )
+
+    def suspend_tenant(self, tenant_id: str) -> dict:
+        return self._request("POST", f"/platform/tenants/{tenant_id}/suspend")
+
+    def reactivate_tenant(self, tenant_id: str) -> dict:
+        return self._request("POST", f"/platform/tenants/{tenant_id}/reactivate")
+
+    def delete_tenant(self, tenant_id: str) -> dict | None:
+        return self._request("DELETE", f"/platform/tenants/{tenant_id}")
 
     def get_tenant_usage(self, tenant_id: str) -> dict:
         return self._request("GET", f"/platform/tenants/{tenant_id}/usage-summary") or {}

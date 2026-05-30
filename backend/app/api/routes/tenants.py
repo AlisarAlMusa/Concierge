@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_user_manager
 from app.dependencies import get_session, require_tenant_manager
 from app.models.user import User
-from app.schemas.auth import InviteAdminRequest, UserRead
+from app.schemas.auth import InviteAdminRequest, InviteAdminResponse
 from app.schemas.tenant import TenantCreate, TenantRead, TenantUsageSummary
 from app.services import tenant_service
 from app.services.auth_service import invite_admin as _invite_admin
@@ -44,6 +44,8 @@ async def create_tenant(
         slug=body.slug,
         actor_id=manager.id,
         actor_role=manager.role.value,
+        contact_email=body.contact_email,
+        description=body.description,
     )
     return TenantRead.model_validate(tenant)
 
@@ -92,7 +94,7 @@ async def get_tenant(
 
 @router.post(
     "/{tenant_id}/invite-admin",
-    response_model=UserRead,
+    response_model=InviteAdminResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Invite a tenant_admin for the specified tenant (tenant_manager only)",
 )
@@ -103,8 +105,18 @@ async def invite_admin_route(
     session: AsyncSession = Depends(get_session),
     user_manager=Depends(get_user_manager),
 ):
-    new_user = await _invite_admin(tenant_id, body.email, session, user_manager)
-    return UserRead.model_validate(new_user)
+    """Create a tenant_admin and return the temporary password ONCE.
+
+    The temp password lives in the response body for this single call so the
+    platform manager can hand it to the new admin out of band. It is never
+    written to the audit log, structlog, or any DB row in plaintext — only
+    the bcrypt-style hash is persisted in ``users.hashed_password``.
+    """
+    new_user, temp_password = await _invite_admin(
+        tenant_id, body.email, session, user_manager
+    )
+    payload = InviteAdminResponse.model_validate(new_user)
+    return payload.model_copy(update={"temporary_password": temp_password})
 
 
 # ──────────────────────────────────────────────────────────────────────────────

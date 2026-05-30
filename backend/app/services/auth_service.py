@@ -153,18 +153,17 @@ async def invite_admin(
     email: str,
     session: AsyncSession,
     user_manager: Any,
-) -> Any:
+) -> tuple[Any, str]:
     """Create a tenant_admin user associated with tenant_id.
 
     • Raises 404 if the tenant does not exist or is not active.
     • Raises 409 if the email is already registered.
-    • Writes an `invite_admin` audit event.
-    • Returns a User ORM object with role=tenant_admin and correct tenant_id.
-
-    The caller (tenant_manager via the platform route) is responsible for
-    communicating the generated credentials to the new admin out of band.
-    In Week 8 no email flow is implemented; the seeded admin credentials
-    are known from the seed script.
+    • Writes an `invite_admin` audit event (email only — password is never
+      logged, traced, or written to the audit row).
+    • Returns ``(user, temporary_password)`` — the plaintext temp password
+      so the calling platform manager can deliver it to the new admin
+      out of band (Week 8 has no email flow). The hash is what lands in
+      the database; the plaintext is returned to the request thread only.
     """
 
     # Validate tenant exists and is active.
@@ -216,7 +215,8 @@ async def invite_admin(
     await session.commit()
     await session.refresh(new_user)
 
-    # Fire-and-forget audit event.
+    # Fire-and-forget audit event.  Only the invited email lands in the
+    # audit row — the temporary password is NEVER persisted in plaintext.
     write_audit_event(
         action="invite_admin",
         actor_role=UserRole.tenant_manager.value,
@@ -224,4 +224,4 @@ async def invite_admin(
         metadata_={"invited_email": email},
     )
     log.info("invite_admin.created", email=email, tenant_id=str(tenant_id))
-    return new_user
+    return new_user, temp_password

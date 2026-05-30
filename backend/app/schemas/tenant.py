@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.tenant import TenantStatus
 
@@ -11,8 +11,18 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
 
 class TenantCreate(BaseModel):
-    name: str
+    """Create-tenant request body.
+
+    ``name`` + ``slug`` are required (existing contract). ``contact_email``
+    and ``description`` are optional onboarding metadata that, when supplied,
+    are persisted into the matching ``tenant_configs`` row so the new
+    tenant has a fully-populated public-site config on day one.
+    """
+
+    name: str = Field(min_length=1, max_length=255)
     slug: str
+    contact_email: EmailStr | None = None
+    description: str | None = Field(default=None, max_length=2000)
 
     @field_validator("slug")
     @classmethod

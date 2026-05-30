@@ -54,3 +54,17 @@ class InviteAdminRequest(BaseModel):
     """Request body for POST /platform/tenants/{tenant_id}/invite-admin."""
 
     email: EmailStr
+
+
+class InviteAdminResponse(UserRead):
+    """Response body for POST /platform/tenants/{tenant_id}/invite-admin.
+
+    Extends ``UserRead`` (every existing field is still returned at the root,
+    so older clients and tests asserting ``body["role"]`` / ``body["tenant_id"]``
+    continue to work). Adds the one-time ``temporary_password`` so the platform
+    manager can hand it to the new admin out of band — Week-8 has no email
+    flow, so this is the only place the plaintext password ever surfaces.
+    The value is never logged or audited.
+    """
+
+    temporary_password: str | None = None

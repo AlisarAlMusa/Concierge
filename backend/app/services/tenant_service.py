@@ -29,10 +29,36 @@ async def create_tenant(
     slug: str,
     actor_id: UUID,
     actor_role: str,
+    contact_email: str | None = None,
+    description: str | None = None,
 ) -> Tenant:
-    """Create a new active tenant. Raises 409 on duplicate slug."""
+    """Create a new active tenant. Raises 409 on duplicate slug.
+
+    When ``contact_email`` or ``description`` is supplied, a matching
+    ``tenant_configs`` row is also inserted so the public site has
+    populated branding/contact info on day one. The config row uses
+    ``brand_name = name`` as a sensible default; the tenant admin can
+    refine it later via the existing ``/tenant/config`` surface.
+    Behaviour is unchanged when both fields are ``None`` (the config
+    row stays absent and callers fall back to defaults, as before).
+    """
     try:
         tenant = await tenant_repository.create_tenant(session, name=name, slug=slug)
+
+        if contact_email is not None or description is not None:
+            # Local import — avoids pulling TenantConfig into the module
+            # graph for callers that never need it.
+            from app.models.tenant_config import TenantConfig
+
+            session.add(
+                TenantConfig(
+                    tenant_id=tenant.id,
+                    brand_name=name,
+                    contact_email=contact_email,
+                    public_description=description,
+                )
+            )
+
         await session.commit()
     except IntegrityError:
         await session.rollback()
