@@ -131,6 +131,11 @@ class CmsPageService:
             existing.body = body
             existing.status = status
             await cms_repository.flush_pending(self._session)
+            # Same MissingGreenlet guard as ``update_page``: the UPDATE
+            # expires ``updated_at`` (``onupdate=func.now()``) and the route
+            # serializes the ORM object synchronously, so we must re-fetch
+            # before returning.
+            await self._session.refresh(existing)
             page = existing
             logger.info(
                 "cms_page.updated",
@@ -224,6 +229,14 @@ class CmsPageService:
             page.status = status
 
         await cms_repository.flush_pending(self._session)
+        # Targeted probe for the MissingGreenlet root-cause diagnosis: force
+        # SQLAlchemy to re-fetch any column expired by the UPDATE flush
+        # (specifically ``updated_at``, which has ``onupdate=func.now()``) so
+        # the route can serialize the ORM object without triggering a lazy
+        # load outside an active greenlet. See investigation report dated
+        # 2026-05-30; if confirmed, the structural fix is
+        # ``__mapper_args__ = {"eager_defaults": True}`` on the model.
+        await self._session.refresh(page)
 
         chunks_written = 0
         # Final-state checks (Spec 005 FR-004 + FR-009).

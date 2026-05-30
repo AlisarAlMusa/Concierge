@@ -14,6 +14,7 @@ from app.api.routes import (
     public,
     public_site,
     tenants,
+    widget_asset,
     widgets,
 )
 
@@ -41,3 +42,6 @@ api_router.include_router(costs.router, prefix="/costs")
 api_router.include_router(public.router, prefix="/public")
 # Public tenant website — unauthenticated, slug-based, HTML + optional JSON.
 api_router.include_router(public_site.router, prefix="/sites")
+# Embeddable widget bundle — single ``GET /widget.js`` static asset honored by
+# the Admin panel's embed snippet. No prefix; mounted at the root.
+api_router.include_router(widget_asset.router)

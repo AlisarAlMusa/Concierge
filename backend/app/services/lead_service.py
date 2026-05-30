@@ -149,6 +149,11 @@ class LeadService:
             lead.notes = notes or None
 
         await lead_repository.flush_pending(self._session)
+        # MissingGreenlet guard: ``Lead.updated_at`` has ``onupdate=func.now()``
+        # so the UPDATE expires it. The route serializes ``lead`` via
+        # ``LeadRead.model_validate`` synchronously, which would otherwise
+        # trigger a lazy load outside an active greenlet.
+        await self._session.refresh(lead)
         logger.info(
             "lead.patched",
             tenant_id=str(tenant_id),
