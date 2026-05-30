@@ -282,6 +282,7 @@ class ChatOrchestrator:
                 conversation_id=conv_id,
                 tenant_id=tenant_id,
                 user_message=input_check.redacted_text,
+                user_message_original=user_message,
                 reply=input_check.safe_reply or _SPAM_REPLY,
                 route=RouteDecision(path="drop", reason="spam"),
                 sources=[],
@@ -304,6 +305,7 @@ class ChatOrchestrator:
                 conversation_id=conv_id,
                 tenant_id=tenant_id,
                 user_message=input_check.redacted_text,
+                user_message_original=user_message,
                 reply=_SPAM_REPLY,
                 route=decision,
                 sources=[],
@@ -326,6 +328,7 @@ class ChatOrchestrator:
                     conversation_id=conv_id,
                     tenant_id=tenant_id,
                     user_message=input_check.redacted_text,
+                    user_message_original=user_message,
                     reply=workflow_turn.reply,
                     route=decision,
                     sources=workflow_turn.sources,
@@ -344,6 +347,7 @@ class ChatOrchestrator:
                 conversation_id=conv_id,
                 tenant_id=tenant_id,
                 user_message=input_check.redacted_text,
+                user_message_original=user_message,
                 reply=reply,
                 route=decision,
                 sources=sources,
@@ -361,6 +365,7 @@ class ChatOrchestrator:
                 conv_id=conv_id,
                 tenant_id=tenant_id,
                 user_message=input_check.redacted_text,
+                user_message_original=user_message,
                 visitor_session_id=visitor_session_id,
                 tenant_persona=tenant_persona,
                 decision=decision,
@@ -371,6 +376,7 @@ class ChatOrchestrator:
                 conv_id=conv_id,
                 tenant_id=tenant_id,
                 user_message=input_check.redacted_text,
+                user_message_original=user_message,
                 visitor_session_id=visitor_session_id,
                 tenant_persona=tenant_persona,
                 decision=decision,
@@ -390,6 +396,7 @@ class ChatOrchestrator:
             conversation_id=conv_id,
             tenant_id=tenant_id,
             user_message=input_check.redacted_text,
+            user_message_original=user_message,
             reply=turn.reply,
             route=decision,
             sources=turn.sources,
@@ -410,12 +417,16 @@ class ChatOrchestrator:
         visitor_session_id: UUID | None,
         tenant_persona: str | None,
         decision: RouteDecision,
+        user_message_original: str | None = None,
     ) -> ChatTurn:
         """Run a workflow service and shape the result into a ChatTurn.
 
         Shared by the faq + sales paths so the finalize/persist code lives in
         one place. ``workflow`` is duck-typed to ``WorkflowService`` (see
-        ``services/workflows/base.py``).
+        ``services/workflows/base.py``). ``user_message_original`` (raw
+        visitor text) is forwarded to ``_finalize`` so short-term memory
+        stores the unredacted version and subsequent turns of the same
+        conversation never echo ``[REDACTED_*]`` back to the LLM.
         """
         result: WorkflowTurnResult = await workflow.run(
             tenant_id=tenant_id,
@@ -429,6 +440,7 @@ class ChatOrchestrator:
             conversation_id=conv_id,
             tenant_id=tenant_id,
             user_message=user_message,
+            user_message_original=user_message_original,
             reply=result.reply,
             route=decision,
             sources=result.sources,
@@ -476,23 +488,46 @@ class ChatOrchestrator:
         agent_iterations: int,
         write_memory: bool,
         agent_turn: AgentTurnResult | None = None,
+        user_message_original: str | None = None,
     ) -> ChatTurn:
-        """Run the output guardrail, persist memory, log, and shape the response."""
+        """Run the output guardrail, persist memory, log, and shape the response.
+
+        ``user_message`` is the post-input-guardrail string used for the current
+        turn's routing/dispatch. ``user_message_original`` (when provided by the
+        outer turn handler) is the raw visitor text and is preferred for the
+        short-term memory write so subsequent LLM turns see real conversation
+        context rather than ``[REDACTED_*]`` placeholders. The durable
+        ``messages.content_redacted`` SQL column is still written through
+        ``redact(...)`` below, preserving the compliance contract for the
+        audit-readable conversation history.
+        """
         output_check = await self._guardrails.check_output(message=reply, tenant_id=tenant_id)
-        final_reply = (
-            output_check.redacted_text
-            if output_check.allowed
-            else (output_check.safe_reply or _SPAM_REPLY)
+        # When the output guardrail allows the reply we ship the *original*
+        # assistant text to the visitor; ``output_check.redacted_text`` is a
+        # log-grade scrub (regex PIIRedactor — sees a real business email as
+        # ``[REDACTED_EMAIL]``) and must never reach the user-facing payload.
+        # Blocked replies still fall back to the sidecar's ``safe_reply`` or
+        # the canned spam line.
+        if output_check.allowed:
+            final_reply = reply
+        else:
+            final_reply = output_check.safe_reply or _SPAM_REPLY
+
+        # Short-term memory stores the visitor's raw text + the assistant's
+        # original reply so the next LLM turn sees real conversation context.
+        memory_user_message = (
+            user_message_original if user_message_original is not None else user_message
         )
 
         if write_memory:
-            await self._memory.append(tenant_id, conversation_id, "visitor", user_message)
+            await self._memory.append(tenant_id, conversation_id, "visitor", memory_user_message)
             await self._memory.append(tenant_id, conversation_id, "assistant", final_reply)
             if self._conversations is not None:
-                # Persist redacted turns to SQL alongside Redis. ``user_message``
-                # is already the input-guardrail-redacted text; ``final_reply``
-                # is the output-guardrail-redacted text. Defense-in-depth
-                # ``redact`` here catches anything that slipped through.
+                # Durable ``messages.content_redacted`` SQL column stays
+                # redacted (compliance-readable audit history). ``redact()`` is
+                # idempotent so applying it to either the original visitor
+                # text or the input-guardrail-redacted variant yields the
+                # same stored value.
                 msg_meta = {
                     "route": route.path,
                     "route_reason": route.reason,
@@ -506,7 +541,7 @@ class ChatOrchestrator:
                     tenant_id=tenant_id,
                     conversation_id=conversation_id,
                     role=MessageRole.visitor,
-                    content_redacted=redact(user_message),
+                    content_redacted=redact(memory_user_message),
                     metadata={"role_source": "visitor"},
                 )
                 await self._conversations.append_message(

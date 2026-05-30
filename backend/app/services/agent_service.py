@@ -249,7 +249,7 @@ class AgentService:
             if entry.role == "tool":
                 continue
             llm_role = "user" if entry.role == "visitor" else "assistant"
-            messages.append({"role": llm_role, "content": entry.content_redacted})
+            messages.append({"role": llm_role, "content": entry.content})
         messages.append({"role": "user", "content": user_message})
         return messages
 

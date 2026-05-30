@@ -135,7 +135,7 @@ class GuardrailService:
             history_payload = [
                 {
                     "role": "visitor" if e.role == "visitor" else "assistant",
-                    "content": e.content_redacted,
+                    "content": e.content,
                 }
                 for e in history_entries
                 if e.role in {"visitor", "assistant"}

@@ -235,9 +235,9 @@ async def test_history_passed_through(captured) -> None:
     from app.services.memory_service import MemoryEntry
 
     entries = [
-        MemoryEntry(role="visitor", content_redacted="hello", ts=1),
-        MemoryEntry(role="assistant", content_redacted="hi", ts=2),
-        MemoryEntry(role="visitor", content_redacted="what time?", ts=3),
+        MemoryEntry(role="visitor", content="hello", ts=1),
+        MemoryEntry(role="assistant", content="hi", ts=2),
+        MemoryEntry(role="visitor", content="what time?", ts=3),
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
