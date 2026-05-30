@@ -132,7 +132,10 @@ class APIClient:
         if status:
             params["status"] = status
         try:
-            return self._request("GET", "/leads/", params=params) or []
+            result = self._request("GET", "/leads/", params=params)
+            if isinstance(result, dict):
+                return result.get("items", [])
+            return result or []
         except APIError as exc:
             if exc.status_code in (404, 403):
                 return []
@@ -151,7 +154,10 @@ class APIClient:
         if status:
             params["status"] = status
         try:
-            return self._request("GET", "/escalations/", params=params) or []
+            result = self._request("GET", "/escalations/", params=params)
+            if isinstance(result, dict):
+                return result.get("items", [])
+            return result or []
         except APIError as exc:
             if exc.status_code in (404, 403):
                 return []

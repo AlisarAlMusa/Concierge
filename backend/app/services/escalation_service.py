@@ -12,6 +12,12 @@ inserting a duplicate. After the row is durable, we flip the parent
 ``Conversation.status`` to ``escalated`` (FR-009) — that flip is
 idempotent on its own.
 
+All ``session.execute`` / ``session.add`` / ``session.flush`` calls live
+in ``app.repositories.escalation_repository``; this service owns the
+race-recovery logic (``IntegrityError`` → ``session.rollback`` → lookup
+of the row that won), the orchestration with ``ConversationService``,
+DTO construction, and logging.
+
 Owner: Person B.
 """
 
@@ -20,12 +26,12 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import ConversationStatus
 from app.models.escalation import Escalation, EscalationStatus
+from app.repositories import escalation_repository
 from app.services.conversation_service import ConversationService
 from app.services.tools.escalate import EscalateResult
 
@@ -75,9 +81,8 @@ class EscalationService:
             context=context,
             status=EscalationStatus.open,
         )
-        self._session.add(escalation)
         try:
-            await self._session.flush()
+            await escalation_repository.add(self._session, escalation)
         except IntegrityError as exc:
             # Race: another turn inserted between our lookup and flush. Roll
             # back to recover this session, then return the row that won.
@@ -122,26 +127,19 @@ class EscalationService:
         if offset < 0:
             raise ValueError("list_escalations: offset must be >= 0")
 
-        total_stmt = select(func.count(Escalation.id)).where(Escalation.tenant_id == tenant_id)
-        total = (await self._session.execute(total_stmt)).scalar_one()
-
-        items_stmt = (
-            select(Escalation)
-            .where(Escalation.tenant_id == tenant_id)
-            .order_by(Escalation.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+        total = await escalation_repository.count_for_tenant(
+            self._session, tenant_id=tenant_id
         )
-        items = (await self._session.execute(items_stmt)).scalars().all()
-        return list(items), int(total)
+        items = await escalation_repository.list_for_tenant(
+            self._session, tenant_id=tenant_id, limit=limit, offset=offset
+        )
+        return items, total
 
     async def get_escalation(self, *, tenant_id: UUID, escalation_id: UUID) -> Escalation | None:
         """Return one escalation or ``None`` if absent / cross-tenant."""
-        stmt = select(Escalation).where(
-            Escalation.tenant_id == tenant_id,
-            Escalation.id == escalation_id,
+        return await escalation_repository.get_for_tenant(
+            self._session, tenant_id=tenant_id, escalation_id=escalation_id
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def update_escalation(
         self,
@@ -168,7 +166,13 @@ class EscalationService:
             return None
 
         escalation.status = status
-        await self._session.flush()
+        await escalation_repository.flush_pending(self._session)
+        # MissingGreenlet guard: ``Escalation.updated_at`` has
+        # ``onupdate=func.now()`` so the UPDATE expires it. The route
+        # serializes ``escalation`` via ``EscalationRead.model_validate``
+        # synchronously, which would otherwise trigger a lazy load outside
+        # an active greenlet.
+        await self._session.refresh(escalation)
         logger.info(
             "escalation.patched",
             tenant_id=str(tenant_id),
@@ -178,11 +182,9 @@ class EscalationService:
         return escalation
 
     async def _lookup(self, tenant_id: UUID, conversation_id: UUID) -> Escalation | None:
-        stmt = select(Escalation).where(
-            Escalation.tenant_id == tenant_id,
-            Escalation.conversation_id == conversation_id,
+        return await escalation_repository.get_by_conversation(
+            self._session, tenant_id=tenant_id, conversation_id=conversation_id
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def _mark_conversation_escalated(self, tenant_id: UUID, conversation_id: UUID) -> None:
         await self._conversations.set_status(

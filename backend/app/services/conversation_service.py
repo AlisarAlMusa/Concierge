@@ -12,7 +12,10 @@ Two responsibilities for the orchestrator:
    so the admin UI can replay a conversation later.
 
 Everything is tenant-scoped at the SQL layer; the RLS policy on both
-tables is the second wall.
+tables is the second wall. All ``session.execute`` / ``session.add`` /
+``session.flush`` calls live in
+``app.repositories.conversation_repository`` — this service contains only
+business logic (DTO/ORM construction and logging).
 
 Owner: Person B.
 """
@@ -23,7 +26,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import (
@@ -32,6 +34,7 @@ from app.models.conversation import (
     Message,
     MessageRole,
 )
+from app.repositories import conversation_repository
 
 logger = structlog.get_logger(__name__)
 
@@ -55,11 +58,9 @@ class ConversationService:
         before calling this. We use that id verbatim (no auto-generation) so
         Redis memory keys and SQL rows stay aligned.
         """
-        stmt = select(Conversation).where(
-            Conversation.tenant_id == tenant_id,
-            Conversation.id == conversation_id,
+        existing = await conversation_repository.get_for_tenant(
+            self._session, tenant_id=tenant_id, conversation_id=conversation_id
         )
-        existing = (await self._session.execute(stmt)).scalar_one_or_none()
         if existing is not None:
             return existing
 
@@ -70,8 +71,7 @@ class ConversationService:
             visitor_session_id=visitor_session_id,
             status=ConversationStatus.active,
         )
-        self._session.add(conversation)
-        await self._session.flush()
+        await conversation_repository.add(self._session, conversation)
         return conversation
 
     async def append_message(
@@ -92,8 +92,7 @@ class ConversationService:
             content_redacted=content_redacted,
             meta=dict(metadata or {}),
         )
-        self._session.add(message)
-        await self._session.flush()
+        await conversation_repository.add_message(self._session, message)
         return message
 
     async def set_status(
@@ -104,11 +103,9 @@ class ConversationService:
         status: ConversationStatus,
     ) -> None:
         """Flip ``conversation.status`` — used by ``EscalationService.create`` (Spec 012 FR-009)."""
-        stmt = select(Conversation).where(
-            Conversation.tenant_id == tenant_id,
-            Conversation.id == conversation_id,
+        conversation = await conversation_repository.get_for_tenant(
+            self._session, tenant_id=tenant_id, conversation_id=conversation_id
         )
-        conversation = (await self._session.execute(stmt)).scalar_one_or_none()
         if conversation is None:
             logger.warning(
                 "conversation.set_status_missing",
@@ -118,4 +115,4 @@ class ConversationService:
             )
             return
         conversation.status = status
-        await self._session.flush()
+        await conversation_repository.flush_pending(self._session)

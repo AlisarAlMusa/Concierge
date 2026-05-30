@@ -29,6 +29,11 @@ Architectural invariants (frozen):
 * Embedding dimension is asserted to be 1024 at insert time so a silent
   model swap surfaces immediately as ``ValueError``, not as a vector column
   type error deep inside Postgres. (Spec §6.10.)
+* All raw SQL construction (cosine-distance SELECT, DELETE-by-page) and
+  every ``session.execute`` / ``session.add_all`` / ``session.flush`` call
+  lives in ``app.repositories.chunk_repository`` — this service owns
+  embedding orchestration, distance→score conversion, DTO construction,
+  and logging.
 
 Owner: Person B.
 """
@@ -39,11 +44,10 @@ from typing import Protocol
 from uuid import UUID
 
 import structlog
-from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import CMS_CHUNK_EMBEDDING_DIM, CmsChunk
-from app.models.cms import CmsPage, CmsPageStatus
+from app.repositories import chunk_repository
 from app.services.chunking import chunk_page
 from app.services.tools.rag_search import RagChunk, RagSearchResult
 
@@ -125,24 +129,13 @@ class RagService:
 
         query_vec = await self._embedding.embed_query(query)
 
-        # Explicit tenant filter at the SQL layer — RLS is the second wall.
-        distance_col = CmsChunk.embedding.cosine_distance(query_vec).label("distance")
-        stmt = (
-            select(CmsChunk.text, CmsChunk.page_id, distance_col)
-            .where(CmsChunk.tenant_id == tenant_id)
-            .order_by(distance_col)
-            .limit(max_chunks)
+        rows = await chunk_repository.search_top_k(
+            self._session,
+            tenant_id=tenant_id,
+            query_vector=query_vec,
+            limit=max_chunks,
+            published_only=published_only,
         )
-        if published_only:
-            # JOIN against cms_pages so retrieval reflects the live
-            # publication state, not the historical "was once published"
-            # state baked into cms_chunks. The composite index
-            # (tenant_id, status) makes this a cheap index-only filter.
-            stmt = stmt.join(CmsPage, CmsPage.id == CmsChunk.page_id).where(
-                CmsPage.status == CmsPageStatus.published
-            )
-
-        rows = (await self._session.execute(stmt)).all()
         chunks = [
             RagChunk(
                 text=row.text,
@@ -188,11 +181,8 @@ class RagService:
 
         # Delete-then-insert, in the caller's transaction. The caller (route /
         # CMS publishing flow) commits when the request completes.
-        await self._session.execute(
-            delete(CmsChunk).where(
-                CmsChunk.tenant_id == tenant_id,
-                CmsChunk.page_id == page_id,
-            )
+        await chunk_repository.delete_for_page(
+            self._session, tenant_id=tenant_id, page_id=page_id
         )
 
         if chunks:
@@ -206,9 +196,8 @@ class RagService:
                 )
                 for chunk, vec in zip(chunks, embeddings, strict=True)
             ]
-            self._session.add_all(rows)
+            await chunk_repository.bulk_insert(self._session, rows)
 
-        await self._session.flush()
         logger.info(
             "rag.index_page.completed",
             tenant_id=str(tenant_id),
@@ -228,14 +217,9 @@ class RagService:
         Used by the CMS publishing flow on unpublish. Returns ``rowcount`` so
         callers (and admin tooling) can confirm whether anything was deleted.
         """
-        result = await self._session.execute(
-            delete(CmsChunk).where(
-                CmsChunk.tenant_id == tenant_id,
-                CmsChunk.page_id == page_id,
-            )
+        deleted = await chunk_repository.delete_for_page(
+            self._session, tenant_id=tenant_id, page_id=page_id
         )
-        await self._session.flush()
-        deleted = result.rowcount or 0
         logger.info(
             "rag.delete_page.completed",
             tenant_id=str(tenant_id),

@@ -19,6 +19,11 @@ Architectural rules honored here:
   row in place and re-indexes the chunks via the existing
   delete-then-insert path. Posting an empty body still clears prior
   chunks for that page.
+* All SQL statement construction, ``session.add`` / ``session.delete`` /
+  ``session.flush`` calls live in ``app.repositories.cms_repository`` —
+  this service contains only business logic (slug derivation, conflict
+  detection, status-transition reindex/delete decisions, DTO
+  construction, logging).
 
 Owner: Person B.
 """
@@ -30,10 +35,10 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import structlog
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.cms import CmsPage, CmsPageStatus
+from app.repositories import cms_repository
 from app.services.rag_service import RagService
 
 logger = structlog.get_logger(__name__)
@@ -113,8 +118,7 @@ class CmsPageService:
                 body=body,
                 status=status,
             )
-            self._session.add(page)
-            await self._session.flush()
+            await cms_repository.add(self._session, page)
             logger.info(
                 "cms_page.created",
                 tenant_id=str(tenant_id),
@@ -126,7 +130,12 @@ class CmsPageService:
             existing.title = title.strip()
             existing.body = body
             existing.status = status
-            await self._session.flush()
+            await cms_repository.flush_pending(self._session)
+            # Same MissingGreenlet guard as ``update_page``: the UPDATE
+            # expires ``updated_at`` (``onupdate=func.now()``) and the route
+            # serializes the ORM object synchronously, so we must re-fetch
+            # before returning.
+            await self._session.refresh(existing)
             page = existing
             logger.info(
                 "cms_page.updated",
@@ -153,23 +162,17 @@ class CmsPageService:
         if offset < 0:
             raise ValueError("list_pages: offset must be >= 0")
 
-        total_stmt = select(func.count(CmsPage.id)).where(CmsPage.tenant_id == tenant_id)
-        total = (await self._session.execute(total_stmt)).scalar_one()
-
-        items_stmt = (
-            select(CmsPage)
-            .where(CmsPage.tenant_id == tenant_id)
-            .order_by(CmsPage.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+        total = await cms_repository.count_for_tenant(self._session, tenant_id=tenant_id)
+        items = await cms_repository.list_for_tenant(
+            self._session, tenant_id=tenant_id, limit=limit, offset=offset
         )
-        items = (await self._session.execute(items_stmt)).scalars().all()
-        return list(items), int(total)
+        return items, total
 
     async def get_page(self, *, tenant_id: UUID, page_id: UUID) -> CmsPage | None:
         """Return one page or ``None`` if absent / cross-tenant."""
-        stmt = select(CmsPage).where(CmsPage.tenant_id == tenant_id, CmsPage.id == page_id)
-        return (await self._session.execute(stmt)).scalar_one_or_none()
+        return await cms_repository.get_by_id(
+            self._session, tenant_id=tenant_id, page_id=page_id
+        )
 
     async def update_page(
         self,
@@ -225,7 +228,15 @@ class CmsPageService:
         if status is not None:
             page.status = status
 
-        await self._session.flush()
+        await cms_repository.flush_pending(self._session)
+        # Targeted probe for the MissingGreenlet root-cause diagnosis: force
+        # SQLAlchemy to re-fetch any column expired by the UPDATE flush
+        # (specifically ``updated_at``, which has ``onupdate=func.now()``) so
+        # the route can serialize the ORM object without triggering a lazy
+        # load outside an active greenlet. See investigation report dated
+        # 2026-05-30; if confirmed, the structural fix is
+        # ``__mapper_args__ = {"eager_defaults": True}`` on the model.
+        await self._session.refresh(page)
 
         chunks_written = 0
         # Final-state checks (Spec 005 FR-004 + FR-009).
@@ -264,8 +275,7 @@ class CmsPageService:
             return False
 
         chunks_deleted = await self._rag.delete_page(tenant_id=tenant_id, page_id=page_id)
-        await self._session.delete(page)
-        await self._session.flush()
+        await cms_repository.remove(self._session, page)
         logger.info(
             "cms_page.deleted",
             tenant_id=str(tenant_id),
@@ -287,7 +297,7 @@ class CmsPageService:
             return None
 
         page.status = CmsPageStatus.published
-        await self._session.flush()
+        await cms_repository.flush_pending(self._session)
 
         chunks_written = await self._rag.index_page(
             tenant_id=tenant_id,
@@ -347,13 +357,9 @@ class CmsPageService:
         background-job path for 100+ pages; implementing the queue lives
         with the worker service and is intentionally out of scope here.
         """
-        stmt = (
-            select(CmsPage)
-            .where(CmsPage.tenant_id == tenant_id)
-            .where(CmsPage.status == CmsPageStatus.published)
-            .order_by(CmsPage.created_at.asc())
+        pages = await cms_repository.list_published_for_tenant(
+            self._session, tenant_id=tenant_id
         )
-        pages = list((await self._session.execute(stmt)).scalars().all())
 
         total_chunks = 0
         for page in pages:
@@ -372,5 +378,6 @@ class CmsPageService:
         return len(pages), total_chunks
 
     async def _lookup_by_slug(self, *, tenant_id: UUID, slug: str) -> CmsPage | None:
-        stmt = select(CmsPage).where(CmsPage.tenant_id == tenant_id, CmsPage.slug == slug)
-        return (await self._session.execute(stmt)).scalar_one_or_none()
+        return await cms_repository.get_by_slug(
+            self._session, tenant_id=tenant_id, slug=slug
+        )
