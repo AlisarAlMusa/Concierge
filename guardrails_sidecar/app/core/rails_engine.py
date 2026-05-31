@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PLATFORM_THRESHOLD = 0.45  # tuned against red_team_prompts.yaml (spec 016)
 DEFAULT_HISTORY_TURNS = 6
+DEFAULT_SYSTEM_PROMPT_THRESHOLD = 0.70  # tuned against output_leak_prompts.yaml
 
 # Canonical jailbreak corpus — the "define user ask for system prompt" /
 # "define user attempt jailbreak" blocks from the Colang brief expressed as
@@ -98,6 +100,41 @@ def _history_window() -> int:
         return DEFAULT_HISTORY_TURNS
 
 
+def _system_prompt_threshold() -> float:
+    raw = os.environ.get("GUARDRAILS_SYSTEM_PROMPT_THRESHOLD", "")
+    if not raw:
+        return DEFAULT_SYSTEM_PROMPT_THRESHOLD
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_SYSTEM_PROMPT_THRESHOLD
+
+
+def _load_system_prompt_text() -> str | None:
+    """Resolve the agent system-prompt text for Layer 1 (FR-029).
+
+    Order of precedence: env literal SYSTEM_PROMPT_TEXT first, then file at
+    SYSTEM_PROMPT_PATH. Both unset → return None and Layer 1 disables.
+    """
+    literal = os.environ.get("SYSTEM_PROMPT_TEXT", "").strip()
+    if literal:
+        return literal
+    path = os.environ.get("SYSTEM_PROMPT_PATH", "").strip()
+    if path:
+        try:
+            from pathlib import Path
+
+            content = Path(path).read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except OSError as exc:
+            logger.warning("SYSTEM_PROMPT_PATH=%s unreadable (%s); disabling Layer 1", path, exc)
+    return None
+
+
+_WORD_BOUNDARY_RE = re.compile(r"\W+")
+
+
 @dataclass
 class HistoryTurn:
     role: Literal["visitor", "assistant"]
@@ -120,12 +157,36 @@ class RailsEngine:
     _corpus_vecs: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.float32))
     _corpus_phrases: list[str] = field(default_factory=list)
     _corpus_reasons: list[str] = field(default_factory=list)
+    # Layer 1: pre-computed system-prompt embedding (FR-026). None disables L1.
+    _system_prompt_vec: np.ndarray | None = None
 
     @classmethod
     def build(cls, embedder: TopicEmbedder) -> "RailsEngine":
         engine = cls(embedder=embedder)
         engine._init_corpus()
+        engine._init_system_prompt()
         return engine
+
+    def _init_system_prompt(self) -> None:
+        """Embed the agent system prompt once (FR-026 / FR-029).
+
+        Layer 1 disables silently with a single warning when no prompt is
+        configured — startup must succeed regardless.
+        """
+        text = _load_system_prompt_text()
+        if not text:
+            logger.warning(
+                "SYSTEM_PROMPT_TEXT / SYSTEM_PROMPT_PATH unset — output rail "
+                "Layer 1 (system-prompt leakage check) is DISABLED"
+            )
+            self._system_prompt_vec = None
+            return
+        self._system_prompt_vec = embed(self.embedder, text)
+        logger.info(
+            "output rail Layer 1 loaded: system_prompt embed dim=%d threshold=%.2f",
+            self._system_prompt_vec.shape[0],
+            _system_prompt_threshold(),
+        )
 
     def _init_corpus(self) -> None:
         phrases = [p for p, _ in PLATFORM_REJECT_CORPUS]
@@ -209,3 +270,75 @@ class RailsEngine:
         if not verdict.allowed:
             return verdict
         return self._check_tenant(message, blocked_topics or [])
+
+    # ── Output rail (Phase 2 — spec 010 US8 + US9 / FR-026 + FR-027) ─────
+
+    @staticmethod
+    def _compile_cross_tenant_pattern(terms: list[str]) -> re.Pattern[str] | None:
+        """Compile case-insensitive word-boundary regex from a denylist.
+
+        Returns None if the cleaned list is empty so callers can short-circuit.
+        Each term is `re.escape`-d so a tenant name containing regex metacharacters
+        cannot break compilation.
+        """
+        cleaned = [t.strip() for t in terms if isinstance(t, str) and t.strip()]
+        if not cleaned:
+            return None
+        # Long-to-short so "AcmeCorp" wins over "Acme" if both are present
+        # (greedier match first).
+        cleaned.sort(key=len, reverse=True)
+        alternation = "|".join(re.escape(t) for t in cleaned)
+        # Use word-class lookarounds rather than `\b` because `\b` only fires
+        # at a word/non-word transition — it fails when a tenant name ends in
+        # punctuation (e.g. "Foo Inc.") because both `.` and the following
+        # space are non-word.
+        return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.IGNORECASE)
+
+    def evaluate_output(
+        self,
+        message: str,
+        cross_tenant_terms: list[str] | None = None,
+    ) -> Verdict:
+        """Run output rails in order: Layer 1 (system-prompt cosine) → Layer 2
+        (cross-tenant regex). First trigger wins; reasons are distinct so the
+        backend can log which layer fired.
+
+        Layer 1 is a no-op if `_system_prompt_vec` was not initialized at
+        startup (FR-026). Layer 2 is a no-op if the supplied list is empty
+        (FR-027). Output regex redaction (FR-020) runs at the route layer,
+        AFTER this method returns — so the verdict's `redacted_text` is set
+        by the route, not here.
+        """
+        if not message or not message.strip():
+            return Verdict(allowed=True)
+
+        # Layer 1 — system-prompt leakage. Always-measure: even when below
+        # threshold we surface the cosine on the verdict so operators can tune.
+        l1_sim = 0.0
+        if self._system_prompt_vec is not None:
+            from app.core.topic_similarity import cosine
+
+            out_vec = embed(self.embedder, message)
+            l1_sim = cosine(out_vec, self._system_prompt_vec)
+            if l1_sim >= _system_prompt_threshold():
+                return Verdict(
+                    allowed=False,
+                    reason="system_prompt_leak",
+                    safe_reply="I'm not able to share that.",
+                    similarity=l1_sim,
+                )
+
+        # Layer 2 — cross-tenant hallucinated references.
+        pattern = self._compile_cross_tenant_pattern(cross_tenant_terms or [])
+        if pattern is not None:
+            match = pattern.search(message)
+            if match is not None:
+                return Verdict(
+                    allowed=False,
+                    reason="cross_tenant_reference",
+                    safe_reply="I'm not able to discuss other customers.",
+                    matched_phrase=match.group(0),
+                    similarity=l1_sim,  # carry L1 sim for observability
+                )
+
+        return Verdict(allowed=True, similarity=l1_sim)

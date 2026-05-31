@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # MiniLM ONNX directory (spec 010 FR-017).
     MODELS_DIR: str = "models"
 
+    # Output rail Layer 1 (spec 010 FR-026 / FR-029). Set either the literal
+    # prompt text OR a path to a file; both unset → Layer 1 disabled with a
+    # boot-time warning.
+    SYSTEM_PROMPT_TEXT: str = ""
+    SYSTEM_PROMPT_PATH: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

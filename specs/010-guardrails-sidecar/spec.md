@@ -148,6 +148,40 @@ A tenant admin POSTs a malicious or oversized config — 200 blocked topics, eac
 
 ---
 
+### User Story 8 — Output Rail Catches Verbatim / Near-Verbatim System-Prompt Leakage (Priority: P1)
+
+An LLM reply that begins "I was instructed to be a helpful plumbing assistant and to never discuss…" gets blocked by the output rail before reaching the visitor. The orchestrator returns a safe refusal in its place. This happens without an LLM-as-judge call — the rail cosine-matches the reply against the agent's actual system prompt (embedded once at sidecar startup) and blocks above a tunable threshold.
+
+**Why this priority**: Phase 1 output rails ship as regex-only (FR-020), which catches re-pasted secrets but cannot catch the case where the LLM voluntarily echoes its own configuration. Visitors asking benign questions ("how are you set up?") can elicit prompt-text leaks from the LLM that no input-rail probe could anticipate. The output rail is the only place to catch this, and a cheap cosine match against the configured prompt is the right Phase-2 floor — full hallucination detection lives in a follow-up spec.
+
+**Independent Test**: Configure `SYSTEM_PROMPT_TEXT="<the actual agent prompt>"`. POST `/guardrails/check-output` with `message="<the prompt verbatim>"` and confirm `allowed=false, reason="system_prompt_leak"`. POST with `message="<an unrelated benign reply>"` and confirm `allowed=true`. Measured cosine MUST appear on the verdict so operators can tune the threshold.
+
+**Acceptance Scenarios**:
+
+1. **Given** the sidecar is configured with a system prompt, **When** the output text matches the prompt verbatim, **Then** the rail returns `allowed=false, reason="system_prompt_leak"` with the measured similarity carried on the response for observability.
+2. **Given** the same configuration, **When** the output paraphrases the prompt at similarity ≥ 0.70, **Then** the rail blocks. (Threshold is `GUARDRAILS_SYSTEM_PROMPT_THRESHOLD`, tunable per environment.)
+3. **Given** the system prompt is NOT configured (both env vars empty), **When** any output is checked, **Then** Layer 1 is a no-op, no warning is logged per-request, and the rest of the output check still runs.
+4. **Given** an output that contains a small fragment of the prompt (e.g. one sentence) inside a much longer benign reply, **When** cosine is computed over the full reply, **Then** the rail MAY allow if dilution drops the similarity below threshold. Documented as a known limit of bag-of-tokens cosine.
+
+---
+
+### User Story 9 — Output Rail Catches Hallucinated Cross-Tenant References (Priority: P1)
+
+An LLM reply that says "Other companies like Acme Corp paid more for the Enterprise plan" gets blocked when the calling tenant is not Acme. The check is deterministic — a regex compiled from all OTHER tenants' slug+name pairs is matched against the reply with word-boundary semantics. False positives are bounded by requiring word boundaries (a tenant named "Pro" doesn't trip a regex on "professional"). Note: this is defense-in-depth — the canonical defense against cross-tenant data leakage is RLS + repository scoping (Constitution Principle I). The output rail catches the case where the LLM *hallucinates* references it doesn't actually have.
+
+**Why this priority**: Even with perfect tenant scoping in the repository layer, an LLM trained on public data may invent references to companies it has heard of in training, and some of those names may match real tenants in our system. This is one of the few cross-tenant failure modes that the RLS layer cannot catch (the LLM never queried any data — it confabulated). Catching it at the output is a cheap regex.
+
+**Independent Test**: Boot the sidecar. POST `/guardrails/check-output` with `tenant_id=A` and `cross_tenant_terms=["TenantB-slug", "TenantB-Name", "TenantC-slug"]`. Set message to one that mentions "TenantB-Name". Confirm `allowed=false, reason="cross_tenant_reference"`. Repeat with a message that mentions "TenantA-Name" itself — confirm `allowed=true` (own tenant should not match its own denylist).
+
+**Acceptance Scenarios**:
+
+1. **Given** a non-empty `cross_tenant_terms` list, **When** any term appears as a whole word in the message (case-insensitive), **Then** the rail returns `allowed=false, reason="cross_tenant_reference"`.
+2. **Given** an empty / missing `cross_tenant_terms`, **When** the message is checked, **Then** Layer 2 is a no-op — the rest of the output check still runs.
+3. **Given** the GuardrailService in the backend, **When** it calls the sidecar's `/guardrails/check-output`, **Then** it MUST populate `cross_tenant_terms` from `tenant_repository.get_all_tenants()` minus the current tenant. The list MAY be cached for up to 300 seconds to avoid per-request DB hits.
+4. **Given** a tenant whose name is also a common English word (e.g. "Apple"), **When** the LLM reply uses the word in a benign context ("an apple a day"), **Then** the rail blocks (case-insensitive word-boundary match). This is a known FPR trade-off; tenants with common-word names should consider also using the persona / refusal_tone fields to steer the LLM away from generic English.
+
+---
+
 ### Edge Cases
 
 - What happens when the guardrails sidecar is unavailable? → Phase 1 default is **fail-closed**: the main API returns a safe refusal reply and does NOT call the LLM. This is the safety-first default for this spec. A fail-open switch lives behind `GUARDRAILS_FAIL_OPEN=false` env and may be flipped only with a documented decision recorded in `docs/DECISIONS.md`.
@@ -223,6 +257,15 @@ A tenant admin POSTs a malicious or oversized config — 200 blocked topics, eac
 - **FR-024**: A `GuardrailService` in `backend/app/services/guardrail_service.py` MUST own all calls to the sidecar. It MUST (a) read the tenant's `guardrails_config` via the repository, (b) read the last N turns from `MemoryService`, (c) attach `X-Service-Token` from the lifespan-shared authenticated client (spec 018), and (d) `httpx.post` with a 2-second timeout and one retry on connect-error.
 - **FR-025**: `ChatOrchestrator` MUST consume the real `GuardrailService` via DI (replacing `PassthroughGuardrailClient`). The Protocol surface in `chat_orchestrator.py` (`check_input`, `check_output`) MUST NOT change — only the implementation behind it.
 
+#### Output Rails Phase 2 — Semantic + Cross-Tenant (FR-026 through FR-029)
+
+Phase 1 output rails are regex-only (FR-020): the LLM reply is scrubbed for PII patterns and never blocked. Phase 2 adds two semantic layers to catch what regex cannot — verbatim/near-verbatim system-prompt leakage and hallucinated cross-tenant references. **Hallucination detection itself is not in scope here** (it requires an LLM-as-judge call and is tracked as a separate spec).
+
+- **FR-026 (Layer 1 — system-prompt leakage)**: The `RailsEngine` MUST support an optional pre-computed `system_prompt_vec` embedding (None when no prompt is configured). On `evaluate_output`, if the vector is present, the engine MUST cosine-match the reply against it and return `allowed=False, reason="system_prompt_leak"` when similarity ≥ `GUARDRAILS_SYSTEM_PROMPT_THRESHOLD` (default 0.70). When the prompt is not configured, Layer 1 is a no-op — the sidecar still boots, the output check still runs Layer 2 + regex redaction.
+- **FR-027 (Layer 2 — cross-tenant denylist)**: `POST /guardrails/check-output` MUST accept an OPTIONAL `cross_tenant_terms: list[str]` field. The sidecar MUST compile these into a single case-insensitive regex with word-boundary matching and block (`allowed=False, reason="cross_tenant_reference"`) on any match. Empty / missing list MUST disable Layer 2 for that call (defensive default).
+- **FR-028 (Backend caller responsibility)**: `GuardrailService.check_output` MUST fetch the list of slug+name pairs of all OTHER active tenants (every tenant except the calling one) and pass them as `cross_tenant_terms` in the payload. The list MAY be cached but the cache TTL MUST NOT exceed 300 seconds (a freshly-created tenant must be filterable within 5 minutes). Deleted / suspended tenants MUST NOT appear in the list.
+- **FR-029 (System prompt source)**: The system prompt embedded for Layer 1 MUST be loaded from `SYSTEM_PROMPT_TEXT` env (literal text) OR `SYSTEM_PROMPT_PATH` env (file path) at sidecar startup. Both unset MUST disable Layer 1 with a single structured warning logged — startup MUST succeed regardless. The prompt MUST NOT be reloaded per-request (single embed at startup, ~5 ms saved per turn).
+
 ### Key Entities
 
 - **Platform Rail**: Immutable rule enforced for all tenants — injection detection, jailbreak detection, cross-tenant detection, PII redaction. Cannot be configured by tenants.
@@ -252,6 +295,9 @@ A tenant admin POSTs a malicious or oversized config — 200 blocked topics, eac
 - **SC-010**: No `torch` / `transformers` / `sentence_transformers` package in the built `guardrails_sidecar` Docker image. Verified by a CI grep on `docker image inspect`'s layer manifest (constitution Principle V).
 - **SC-011**: A topic change via `PATCH /config/guardrails` is reflected on the next `/chat` request — no cache to invalidate, no restart needed. Verified by an E2E test that PATCHes then immediately chats.
 - **SC-012**: `GuardrailService` makes ≤ 1 sidecar call per chat turn (one input check, one output check, no retries on 2xx/4xx — retries only on connect-error per FR-024). Verified by an httpx `MockTransport` counter test.
+- **SC-013 (output-leak recall)**: Output-rail recall on `evals/security/output_leak_prompts.yaml` ≥ 0.85 — at least 85% of intentionally-leaking outputs in the probe set MUST be blocked by Layer 1 (system-prompt) or Layer 2 (cross-tenant). CI gate.
+- **SC-014 (output-leak FPR)**: False-positive rate on the benign half of the same probe set ≤ 0.15. The benign half MUST include "mentions of helpfulness", "I was told to be polite", and other surface-level overlaps that should NOT trigger Layer 1. CI gate.
+- **SC-015 (Layer 1 disable)**: When `SYSTEM_PROMPT_TEXT` and `SYSTEM_PROMPT_PATH` are both unset, the sidecar MUST boot, emit one structured warning, and continue to serve `/guardrails/check-output` with Layer 1 disabled. Verified by a startup test that asserts no exception and the expected warning record.
 
 ---
 

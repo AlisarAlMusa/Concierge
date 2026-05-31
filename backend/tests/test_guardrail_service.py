@@ -195,8 +195,9 @@ async def test_fail_open_env_flips_default(monkeypatch, captured) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_output_smaller_payload(captured) -> None:
-    """check_output omits tenant_config + history (spec 010 §5)."""
+async def test_check_output_payload_shape(captured) -> None:
+    """check_output omits tenant_config + history (spec 010 §5) but
+    INCLUDES `cross_tenant_terms` since FR-027 / FR-028."""
     import json as _json
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -207,9 +208,50 @@ async def test_check_output_smaller_payload(captured) -> None:
         )
 
     svc = _make_service(transport=httpx.MockTransport(handler))
+    # Patch tenant_repository.get_all_tenants → return [] so the Layer 2
+    # denylist is empty for this transport-shape assertion.
+    import app.services.guardrail_service as gs_module
+
+    gs_module.tenant_repository.get_all_tenants = AsyncMock(return_value=[])
+
     await svc.check_output(message="reply", tenant_id=uuid4())
     body = _json.loads(captured[0].content)
-    assert set(body.keys()) == {"message", "tenant_id"}
+    assert set(body.keys()) == {"message", "tenant_id", "cross_tenant_terms"}
+    assert body["cross_tenant_terms"] == []
+
+
+@pytest.mark.asyncio
+async def test_check_output_populates_cross_tenant_terms(captured) -> None:
+    """FR-028: backend fetches OTHER tenants' slugs+names and passes them."""
+    import json as _json
+    from types import SimpleNamespace
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"allowed": True, "redacted_text": "reply"})
+
+    caller_id = uuid4()
+    # `SimpleNamespace` instead of MagicMock — `name=` on MagicMock is the
+    # mock's repr, not an attribute, which trips JSON serialization.
+    other_a = SimpleNamespace(id=uuid4(), slug="acme", name="Acme Corp")
+    other_b = SimpleNamespace(id=uuid4(), slug="beta", name="Beta")
+    same = SimpleNamespace(id=caller_id, slug="self", name="Myself")  # excluded
+
+    svc = _make_service(transport=httpx.MockTransport(handler))
+    import app.services.guardrail_service as gs_module
+
+    gs_module.tenant_repository.get_all_tenants = AsyncMock(
+        return_value=[other_a, other_b, same]
+    )
+
+    await svc.check_output(message="reply", tenant_id=caller_id)
+    body = _json.loads(captured[0].content)
+    assert "self" not in body["cross_tenant_terms"]
+    assert "Myself" not in body["cross_tenant_terms"]
+    # "beta" (slug) and "Beta" (name) are different strings → both included.
+    # Case-equal names are NOT deduplicated server-side; the regex compile
+    # is case-insensitive so duplicates are harmless.
+    assert set(body["cross_tenant_terms"]) == {"acme", "Acme Corp", "beta", "Beta"}
 
 
 def test_fail_closed_decision_shape() -> None:

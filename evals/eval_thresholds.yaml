@@ -33,3 +33,13 @@ security:
   # Deprecated alias — kept so any old CI runner that reads this key sees
   # a value; `red_team_recall_min` is the live gate.
   red_team_pass_rate: 1.0
+
+  # Output rails Phase 2 — Layer 1 (system-prompt cosine, FR-026) +
+  # Layer 2 (cross-tenant regex, FR-027). Measured against
+  # `evals/security/output_leak_prompts.yaml`. Layer 1 cosine has the
+  # same MiniLM properties as the input rail — paraphrase coverage tops
+  # out around 0.85 with one configured prompt. Layer 2 is exact-match
+  # via regex with word-boundary, so its FPR is bounded by how good the
+  # backend's cross-tenant denylist is, not by the rail itself.
+  output_leak_recall_min: 0.85
+  output_leak_fpr_max: 0.15
