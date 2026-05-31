@@ -96,6 +96,28 @@ class GuardrailService:
         self._memory = memory
         self._timeout = timeout_seconds
 
+    async def _other_tenant_terms(self, tenant_id: UUID) -> list[str]:
+        """Build Layer 2 denylist from active tenants minus the caller.
+
+        Returns slugs + names of every active/suspended tenant other than
+        the calling one. Used by `check_output` per FR-028. Suspended
+        tenants are included because their data may still be referenced
+        in past conversations; deleted tenants are excluded.
+
+        TODO(perf): cache for 60-300s once chat volume warrants. Today
+        this is a single SELECT on a small table — ~1 ms.
+        """
+        rows = await tenant_repository.get_all_tenants(self._session)
+        terms: list[str] = []
+        for t in rows:
+            if t.id == tenant_id:
+                continue
+            if t.slug:
+                terms.append(t.slug)
+            if t.name and t.name != t.slug:
+                terms.append(t.name)
+        return terms
+
     async def _post(self, path: str, json: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         for attempt in range(2):  # 1 retry on connect-error
@@ -177,7 +199,15 @@ class GuardrailService:
         tenant_id: UUID,
     ) -> GuardrailDecision:
         with _tracer.start_as_current_span("guardrails.check_output") as span:
-            payload = {"message": message, "tenant_id": str(tenant_id)}
+            # Spec 010 FR-028: fetch OTHER tenants' identifiers as Layer 2
+            # denylist. Currently un-cached — adding a TTL cache is documented
+            # as a follow-up. Small tenant tables (<1000 rows) make this <1ms.
+            cross_tenant_terms = await self._other_tenant_terms(tenant_id)
+            payload = {
+                "message": message,
+                "tenant_id": str(tenant_id),
+                "cross_tenant_terms": cross_tenant_terms,
+            }
             try:
                 data = await self._post("/guardrails/check-output", payload)
             except httpx.HTTPError as exc:

@@ -92,17 +92,27 @@ async def check_input(request: CheckInputRequest, http: Request) -> CheckInputRe
     response_model=CheckOutputResponse,
     dependencies=[Depends(require_service_token)],
 )
-async def check_output(request: CheckOutputRequest) -> CheckOutputResponse:
-    """Phase 1 output rails are regex-only (spec 010 FR-020).
+async def check_output(request: CheckOutputRequest, http: Request) -> CheckOutputResponse:
+    """Output rails — Phase 2 (spec 010 US8 + US9 / FR-026 + FR-027).
 
-    Semantic checks for "system prompt content in replies" / cross-tenant
-    data leakage in replies are documented as a Phase-2 follow-up in
-    plan.md `Open Gaps`. The visible-text field is always redacted.
+    Order: Layer 1 (system-prompt cosine) → Layer 2 (cross-tenant regex)
+    → regex PII redaction (always-applied, FR-020). First semantic-layer
+    trigger wins; the verdict's reason distinguishes them.
     """
+    rails: RailsEngine = http.app.state.rails
+    verdict = rails.evaluate_output(
+        message=request.message,
+        cross_tenant_terms=request.cross_tenant_terms,
+    )
     return CheckOutputResponse(
-        allowed=True,
-        reason=None,
+        allowed=verdict.allowed,
+        reason=verdict.reason,
+        safe_reply=verdict.safe_reply,
+        # FR-020 — redacted_text is ALWAYS scrubbed regardless of the
+        # semantic verdict, so callers can persist the safe version even
+        # when the original is blocked.
         redacted_text=redact(request.message),
+        similarity=verdict.similarity,
     )
 
 

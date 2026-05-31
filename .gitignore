@@ -64,3 +64,4 @@ htmlcov/
 evals/classifier/last_report.json
 evals/classifier/.cache/
 evals/security/last_security_report.json
+evals/security/last_output_leak_report.json

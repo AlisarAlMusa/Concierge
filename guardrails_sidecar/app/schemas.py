@@ -49,12 +49,19 @@ class CheckInputResponse(BaseModel):
 class CheckOutputRequest(BaseModel):
     message: str
     tenant_id: UUID
+    # Spec 010 FR-027: optional denylist of OTHER tenants' identifiers to
+    # flag when they appear in the LLM reply. Backend owns the list.
+    cross_tenant_terms: list[str] = Field(default_factory=list)
 
 
 class CheckOutputResponse(BaseModel):
     allowed: bool
     reason: str | None = None
+    safe_reply: str | None = None
     redacted_text: str
+    # Carry the measured Layer 1 cosine for operator tuning; surfaced under
+    # `output.similarity` on the trace span in a future change.
+    similarity: float = 0.0
 
 
 class RedactRequest(BaseModel):
